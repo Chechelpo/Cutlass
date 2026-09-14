@@ -1,0 +1,16 @@
+[package]
+name = "Cutlass"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+directories = "6"
+rand = "0.10.2"
+httpdate = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zeroize = "1"
