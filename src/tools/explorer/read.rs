@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::agent::agent_session::{Agent, AgentSession};
+use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{
     ChatCompletionTool, FunctionDefinition, ToolCall, ToolResult,
 };

@@ -3,6 +3,8 @@ pub mod chat_completions;
 pub mod config;
 pub mod orchestrator;
 pub mod tools;
+pub mod tui;
+pub mod ui;
 pub mod ui_interface;
 pub mod utils;
 
@@ -10,14 +12,18 @@ use crate::agent::presets::registry::AgentPresetRegistry;
 use crate::agent::sandbox::filesystem::{BindMount, SandboxedFilesystem};
 use crate::config::ModelConfigStore;
 use crate::orchestrator::BasicWorkflow;
-use crate::ui_interface::UserSessionViewport;
+use crate::tui::{ensure_active_profile, run_tui};
+use crate::ui::UserSessionViewport;
 use crate::utils::default_ro_binds::ro_binds;
 use std::env;
 
-fn main() {
-    let workspace = env::current_dir().expect("Failed to get current directory");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = env::current_dir()?;
     let agent_registry = AgentPresetRegistry::new();
-    let model_configs = ModelConfigStore::new().expect("Couldn't load model configurations");
+    let mut model_configs = ModelConfigStore::new()?;
+    if !ensure_active_profile(&mut model_configs)? {
+        return Ok(());
+    }
 
     let workflow = BasicWorkflow::new(
         SandboxedFilesystem::new(
@@ -27,12 +33,12 @@ fn main() {
                 guest: workspace,
             }],
         ),
-        model_configs
-            .active_config()
-            .expect("No active model configuration"),
+        model_configs.active_config()?,
         agent_registry
             .get_with_name("Coder")
             .expect("Failed to get Coder agent"),
     );
-    let _user_session = UserSessionViewport::new(workflow);
+    let user_session = UserSessionViewport::new(workflow);
+    run_tui(user_session)?;
+    Ok(())
 }

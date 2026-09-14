@@ -1,5 +1,3 @@
-//! Shared interface used by graphical, terminal, and other frontends.
+//! Backwards-compatible exports for the UI session interface.
 
-mod user_view;
-
-pub use user_view::{SessionState, UiError, UserSessionViewport};
+pub use crate::ui::{SessionState, UiError, UserSessionViewport};

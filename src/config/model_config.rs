@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use super::configs::get_config_location;
 use super::{MasterKey, MasterKeyError};
@@ -264,6 +265,24 @@ pub struct ModelConfigStore {
     master_key_path: PathBuf,
 }
 
+/// Values required to create a complete model profile in one operation.
+pub struct NewModelProfile {
+    pub name: String,
+    pub host_url: String,
+    pub model_id: String,
+    pub api_key: String,
+    pub max_input_tokens: usize,
+    pub max_output_tokens: usize,
+    pub retry_amount: u32,
+    pub max_backoff: Duration,
+}
+
+impl Drop for NewModelProfile {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
+}
+
 impl ModelConfigStore {
     /// Load the platform-standard store, creating it on first use.
     pub fn new() -> Result<Self, ModelConfigStoreError> {
@@ -369,6 +388,40 @@ impl ModelConfigStore {
         let previous_active = self.active_config.clone();
         if self.configs.is_empty() {
             self.active_config = name;
+        }
+        self.configs.push(config);
+        if let Err(error) = self.persist() {
+            self.configs.pop();
+            self.active_config = previous_active;
+            return Err(error);
+        }
+        Ok(self.configs.last().expect("a config was just inserted"))
+    }
+
+    /// Creates and persists a profile and its encrypted API key atomically.
+    ///
+    /// Unlike calling [`create`](Self::create) and [`add_key`](Self::add_key)
+    /// separately, a failure cannot leave a profile without credentials.
+    pub fn create_profile(
+        &mut self,
+        profile: NewModelProfile,
+    ) -> Result<&ModelConfig, ModelConfigStoreError> {
+        validate_new_profile(&self.configs, &profile.name)?;
+        let mut config = ModelConfig::with_master_key_file(
+            &profile.name,
+            &profile.host_url,
+            &profile.model_id,
+            profile.max_input_tokens,
+            profile.max_output_tokens,
+            profile.retry_amount,
+            profile.max_backoff,
+            &self.master_key_path,
+        )?;
+        config.add_key(&profile.api_key)?;
+
+        let previous_active = self.active_config.clone();
+        if self.configs.is_empty() {
+            self.active_config = profile.name.clone();
         }
         self.configs.push(config);
         if let Err(error) = self.persist() {
@@ -616,6 +669,41 @@ mod tests {
         );
         let serialized = fs::read_to_string(restored.path()).unwrap();
         assert!(!serialized.contains("secret-api-key"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn store_creates_a_complete_encrypted_profile_atomically() {
+        let root = temporary_key_file("atomic-profile")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let config_directory = root.join("config");
+        let key_directory = root.join("private-data");
+        let mut store = ModelConfigStore::open(&config_directory, &key_directory).unwrap();
+
+        store
+            .create_profile(NewModelProfile {
+                name: "primary".into(),
+                host_url: "https://example.test/v1".into(),
+                model_id: "model-id".into(),
+                api_key: "secret-api-key".into(),
+                max_input_tokens: 10_000,
+                max_output_tokens: 1_000,
+                retry_amount: 4,
+                max_backoff: Duration::from_secs(30),
+            })
+            .unwrap();
+
+        assert_eq!(
+            store.active_config().unwrap().decrypted_keys().unwrap(),
+            ["secret-api-key"]
+        );
+        assert!(
+            !fs::read_to_string(store.path())
+                .unwrap()
+                .contains("secret-api-key")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

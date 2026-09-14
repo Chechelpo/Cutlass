@@ -57,8 +57,11 @@ impl<'a> AgentSession<'a> {
 
     /// Runs model rounds until the assistant produces a final response, the
     /// turn is cancelled, or an API call fails.
-    pub fn run(&mut self) -> Result<(), ApiError> {
+    pub fn run(&mut self, user_prompt: String) -> Result<(), ApiError> {
         let client = ApiClient::new();
+        self.chat_history.push(Message::User {
+            content: user_prompt,
+        });
 
         loop {
             if self.steering_inbox.end_turn_called() {
@@ -84,6 +87,12 @@ impl<'a> AgentSession<'a> {
     /// tool calls into additional retry attempts.
     fn run_turn(&self, client: &ApiClient) -> Result<AssistantMessage, ApiError> {
         let mut retries_remaining = self.model_config.retry_amount();
+        let tools = self
+            .tool_groups()
+            .iter()
+            .flat_map(|group| group.tools())
+            .map(|tool| tool.as_chat_completion_tool())
+            .collect::<Vec<_>>();
 
         loop {
             match client.call(
@@ -92,6 +101,7 @@ impl<'a> AgentSession<'a> {
                 self.model_config.host_url(),
                 self.model_config.decrypted_keys().unwrap().first().unwrap(),
                 self.model_config.max_output_tokens(),
+                &tools,
             ) {
                 Ok(response) => return Ok(response),
                 Err(error) if error.is_retryable && retries_remaining > 0 => {
@@ -114,7 +124,7 @@ impl<'a> AgentSession<'a> {
                     .unwrap_or_else(|| {
                         ToolResult::failure(
                             call,
-                            &format!("No tool found with name '{}'", call.function.name),
+                            format!("No tool found with name '{}'", call.function.name),
                         )
                     })
             })

@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::chat_completions::api::retry_cases::is_retry_case;
 use crate::chat_completions::messages::{AssistantMessage, Message};
+use crate::chat_completions::tools::ChatCompletionTool;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -29,6 +30,7 @@ impl ApiClient {
         host: &str,
         api_key: &str,
         max_output_tokens: usize,
+        tools: &[ChatCompletionTool],
     ) -> Result<AssistantMessage, ApiError> {
         let endpoint = format!("{}/chat/completions", host.trim_end_matches('/'));
 
@@ -40,6 +42,7 @@ impl ApiClient {
                 "model": model,
                 "messages": messages,
                 "max_completion_tokens": max_output_tokens,
+                "tools": tools,
             }))
             .send()
             .map_err(|error| ApiError {
