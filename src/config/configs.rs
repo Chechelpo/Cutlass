@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
-/// Return Cutlass's conventional per-user configuration directory.
+/// Return Cutlass's conventional per-orchestrator configuration directory.
 ///
 /// This follows the platform conventions exposed by the operating system:
 /// XDG configuration on Linux, Application Support on macOS, and roaming

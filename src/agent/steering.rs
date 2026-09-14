@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
-pub struct SteeringInbox{
+pub struct SteeringInbox {
     steering: VecDeque<String>,
-    cancel_turn: bool
+    cancel_turn: bool,
 }
 
 impl SteeringInbox {
@@ -13,28 +13,26 @@ impl SteeringInbox {
         }
     }
 
-    fn drain_steering_message(&mut self) -> Option<String> {
+    pub fn drain_steering_message(&mut self) -> Option<String> {
         if self.steering.is_empty() {
             return None;
         }
 
-        Some(
-            self.steering
-                .drain(..)
-                .collect::<Vec<String>>()
-                .join("\n")
-        )
+        Some(self.steering.drain(..).collect::<Vec<String>>().join("\n"))
     }
 
     fn add_message(&mut self, message: String) {
         self.steering.push_back(message);
     }
 
-    fn cancel_turn(&mut self) {
+    pub fn end_turn_called(&self) -> bool {
+        self.cancel_turn
+    }
+    pub fn cancel_turn(&mut self) {
         self.cancel_turn = true;
     }
 
-    fn acknowledge_end_turn(&mut self) {
+    pub fn acknowledge_end_turn(&mut self) {
         self.cancel_turn = false;
     }
 }

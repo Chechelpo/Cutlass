@@ -4,20 +4,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LogLevel {
     Trace = 10,
     Debug = 20,
@@ -36,7 +25,6 @@ pub struct LogRecord {
     pub fields: HashMap<String, serde_json::Value>,
 }
 
-
 #[derive(Clone)]
 pub struct Logger {
     source: String,
@@ -44,13 +32,8 @@ pub struct Logger {
     output: Arc<Mutex<File>>,
 }
 
-
 impl Logger {
-    pub fn new(
-        source: impl Into<String>,
-        directory: PathBuf,
-        level: LogLevel,
-    ) -> Self {
+    pub fn new(source: impl Into<String>, directory: PathBuf, level: LogLevel) -> Self {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -63,7 +46,6 @@ impl Logger {
             output: Arc::new(Mutex::new(file)),
         }
     }
-
 
     fn write(
         &self,
@@ -82,45 +64,20 @@ impl Logger {
             fields,
         };
 
-        let serialized =
-            serde_json::to_string(&record)
-                .expect("Failed to serialize log");
+        let serialized = serde_json::to_string(&record).expect("Failed to serialize log");
 
-        let mut file =
-            self.output.lock().unwrap();
+        let mut file = self.output.lock().unwrap();
 
-        writeln!(
-            file,
-            "{}",
-            serialized
-        )
-            .expect("Failed writing log");
+        writeln!(file, "{}", serialized).expect("Failed writing log");
     }
 
-
-    pub fn info(
-        &self,
-        event: impl Into<String>,
-    ) {
-        self.write(
-            LogLevel::Info,
-            event,
-            HashMap::new(),
-        );
+    pub fn info(&self, event: impl Into<String>) {
+        self.write(LogLevel::Info, event, HashMap::new());
     }
 
-
-    pub fn error(
-        &self,
-        event: impl Into<String>,
-    ) {
-        self.write(
-            LogLevel::Error,
-            event,
-            HashMap::new(),
-        );
+    pub fn error(&self, event: impl Into<String>) {
+        self.write(LogLevel::Error, event, HashMap::new());
     }
-
 
     pub fn event(
         &self,
@@ -128,11 +85,7 @@ impl Logger {
         event: impl Into<String>,
         fields: HashMap<String, serde_json::Value>,
     ) {
-        self.write(
-            level,
-            event,
-            fields,
-        );
+        self.write(level, event, fields);
     }
 }
 
@@ -148,8 +101,7 @@ mod tests {
             .unwrap()
             .as_nanos();
 
-        let dir = std::env::temp_dir()
-            .join(format!("logger_test_{}", id));
+        let dir = std::env::temp_dir().join(format!("logger_test_{}", id));
 
         fs::create_dir_all(&dir).unwrap();
 
@@ -160,15 +112,9 @@ mod tests {
     fn logger_creates_log_file() {
         let dir = temp_log_dir();
 
-        let _logger = Logger::new(
-            "test",
-            dir.clone(),
-            LogLevel::Info,
-        );
+        let _logger = Logger::new("test", dir.clone(), LogLevel::Info);
 
-        assert!(
-            dir.join("latest.log").exists()
-        );
+        assert!(dir.join("latest.log").exists());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -177,18 +123,11 @@ mod tests {
     fn logger_writes_info_events() {
         let dir = temp_log_dir();
 
-        let logger = Logger::new(
-            "sandbox",
-            dir.clone(),
-            LogLevel::Info,
-        );
+        let logger = Logger::new("sandbox", dir.clone(), LogLevel::Info);
 
         logger.info("sandbox started");
 
-        let contents = fs::read_to_string(
-            dir.join("latest.log")
-        )
-            .unwrap();
+        let contents = fs::read_to_string(dir.join("latest.log")).unwrap();
 
         assert!(contents.contains("sandbox started"));
         assert!(contents.contains("sandbox"));
@@ -200,19 +139,12 @@ mod tests {
     fn logger_respects_log_level() {
         let dir = temp_log_dir();
 
-        let logger = Logger::new(
-            "sandbox",
-            dir.clone(),
-            LogLevel::Error,
-        );
+        let logger = Logger::new("sandbox", dir.clone(), LogLevel::Error);
 
         logger.info("should not appear");
         logger.error("should appear");
 
-        let contents = fs::read_to_string(
-            dir.join("latest.log")
-        )
-            .unwrap();
+        let contents = fs::read_to_string(dir.join("latest.log")).unwrap();
 
         assert!(!contents.contains("should not appear"));
         assert!(contents.contains("should appear"));
@@ -224,34 +156,17 @@ mod tests {
     fn logger_serializes_fields() {
         let dir = temp_log_dir();
 
-        let logger = Logger::new(
-            "tool",
-            dir.clone(),
-            LogLevel::Debug,
-        );
+        let logger = Logger::new("tool", dir.clone(), LogLevel::Debug);
 
         let mut fields = HashMap::new();
 
-        fields.insert(
-            "command".into(),
-            serde_json::json!("ls"),
-        );
+        fields.insert("command".into(), serde_json::json!("ls"));
 
-        fields.insert(
-            "exit_code".into(),
-            serde_json::json!(0),
-        );
+        fields.insert("exit_code".into(), serde_json::json!(0));
 
-        logger.event(
-            LogLevel::Debug,
-            "command executed",
-            fields,
-        );
+        logger.event(LogLevel::Debug, "command executed", fields);
 
-        let contents = fs::read_to_string(
-            dir.join("latest.log")
-        )
-            .unwrap();
+        let contents = fs::read_to_string(dir.join("latest.log")).unwrap();
 
         assert!(contents.contains("command executed"));
         assert!(contents.contains("ls"));
@@ -264,21 +179,14 @@ mod tests {
     fn logger_clones_share_output() {
         let dir = temp_log_dir();
 
-        let logger = Logger::new(
-            "shared",
-            dir.clone(),
-            LogLevel::Info,
-        );
+        let logger = Logger::new("shared", dir.clone(), LogLevel::Info);
 
         let logger_clone = logger.clone();
 
         logger.info("first");
         logger_clone.info("second");
 
-        let contents = fs::read_to_string(
-            dir.join("latest.log")
-        )
-            .unwrap();
+        let contents = fs::read_to_string(dir.join("latest.log")).unwrap();
 
         assert!(contents.contains("first"));
         assert!(contents.contains("second"));

@@ -1,29 +1,20 @@
 use std::process::Command;
 
-use crate::agent::sandbox::sandbox::{Sandbox, SandboxError};
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
+use crate::agent::sandbox::sandbox::{Sandbox, SandboxError};
 
 pub struct BwrapSandbox {
     workspace: SandboxedFilesystem,
 }
 
 impl BwrapSandbox {
-    pub fn new(
-        workspace: SandboxedFilesystem,
-    ) -> BwrapSandbox {
-        BwrapSandbox {
-            workspace,
-        }
+    pub fn new(workspace: SandboxedFilesystem) -> BwrapSandbox {
+        BwrapSandbox { workspace }
     }
 }
 
-
 impl Sandbox for BwrapSandbox {
-    fn execute(
-        &self,
-        command: &str,
-        args: &[String],
-    ) -> Result<(), SandboxError> {
+    fn execute(&self, command: &str, args: &[String]) -> Result<(), SandboxError> {
         let mut cmd = Command::new("bwrap");
 
         // Basic isolation
@@ -32,16 +23,12 @@ impl Sandbox for BwrapSandbox {
 
         // Read-only mounts
         for mount in self.workspace.ro_binds() {
-            cmd.arg("--ro-bind")
-                .arg(&mount.host)
-                .arg(&mount.guest);
+            cmd.arg("--ro-bind").arg(&mount.host).arg(&mount.guest);
         }
 
         // Writable mounts
         for mount in self.workspace.w_binds() {
-            cmd.arg("--bind")
-                .arg(&mount.host)
-                .arg(&mount.guest);
+            cmd.arg("--bind").arg(&mount.host).arg(&mount.guest);
         }
 
         // Command to execute inside sandbox
@@ -52,19 +39,15 @@ impl Sandbox for BwrapSandbox {
             cmd.arg(arg);
         }
 
-        let status = cmd
-            .status()
-            .map_err(SandboxError::Io)?;
+        let status = cmd.status().map_err(SandboxError::Io)?;
 
         if status.success() {
             Ok(())
         } else {
-            Err(SandboxError::ExecutionFailed(
-                format!(
-                    "command exited with status {}",
-                    status
-                ),
-            ))
+            Err(SandboxError::ExecutionFailed(format!(
+                "command exited with status {}",
+                status
+            )))
         }
     }
 

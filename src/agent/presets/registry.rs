@@ -1,16 +1,16 @@
-use crate::agent::presets::preset::AgentPreset;
-use crate::tools::explorer::ReadFileTool;
+use crate::agent::presets::agent::Agent;
+use crate::tools::explorer::{ReadFileAction, ReadFileTool};
 
-pub struct AgentPresetRegistry{
-    all_agents: Vec<AgentPreset>,
+pub struct AgentPresetRegistry {
+    all_agents: Vec<Agent>,
 }
 
 impl AgentPresetRegistry {
-    pub fn get_agents(&self) -> &Vec<AgentPreset> {
+    pub fn get_agents(&self) -> &Vec<Agent> {
         &self.all_agents
     }
 
-    pub fn get_with_name(&self, name: &str) -> Option<&AgentPreset> {
+    pub fn get_with_name(&self, name: &str) -> Option<&Agent> {
         self.all_agents.iter().find(|agent| agent.name == name)
     }
 
@@ -20,15 +20,16 @@ impl AgentPresetRegistry {
                 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                 // CODER
                 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                AgentPreset {
-                    name: String::from("Coder") ,
-                    description: String::from("Coding specialized agent"),
-                    allowed_tools: vec![
-                        Box::new(ReadFileTool::new())
-                    ],
-                    system_prompt: |filesystem| String::from("You are a coder assistant"),
-                    skills: vec![]
-                }
+                Agent::new(
+                    String::from("Coder"),
+                    String::from("Coding specialized agent"),
+                    |_filesystem| String::from("You are a coder assistant"),
+                    vec![Box::new(ReadFileTool::with_actions(
+                        [ReadFileAction::Read],
+                        false,
+                    ))],
+                    vec![],
+                ),
             ],
         }
     }

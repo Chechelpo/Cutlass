@@ -10,10 +10,7 @@ pub enum SandboxError {
     Io(std::io::Error),
 }
 impl fmt::Display for SandboxError {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SandboxError::ExecutionFailed(msg) => {
                 write!(f, "Sandbox execution failed: {}", msg)
@@ -35,18 +32,12 @@ impl fmt::Display for SandboxError {
 }
 
 pub trait Sandbox {
-    fn execute(
-        &self,
-        command: &str,
-        args: &[String],
-    ) -> Result<(), SandboxError>;
+    fn execute(&self, command: &str, args: &[String]) -> Result<(), SandboxError>;
 
     fn workspace(&self) -> &SandboxedFilesystem;
 }
 
-pub fn create_sandbox(
-    workspace: SandboxedFilesystem,
-) -> Box<dyn Sandbox> {
+pub fn create_sandbox(workspace: SandboxedFilesystem) -> Box<dyn Sandbox> {
     #[cfg(target_os = "linux")]
     {
         Box::new(BwrapSandbox::new(workspace))

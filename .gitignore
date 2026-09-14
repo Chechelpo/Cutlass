@@ -1,1 +1,5 @@
 /target
+.codex
+
+.Cargo.lock
+.idea

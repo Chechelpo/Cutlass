@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,10 @@ pub struct ModelConfig {
     encrypted_keys: Vec<String>,
     max_input_tokens: usize,
     max_output_tokens: usize,
+    #[serde(default = "default_retry_amount")]
+    retry_amount: u32,
+    #[serde(default = "default_max_backoff")]
+    max_backoff: Duration,
 
     #[serde(skip)]
     master_key: Option<Arc<MasterKey>>,
@@ -34,6 +39,8 @@ impl ModelConfig {
         id: impl Into<String>,
         max_input_tokens: usize,
         max_output_tokens: usize,
+        retry_amount: u32,
+        max_backoff: Duration,
     ) -> Result<Self, MasterKeyError> {
         let master_key = MasterKey::load_or_create_default()?;
         Ok(Self::with_master_key(
@@ -42,6 +49,8 @@ impl ModelConfig {
             id,
             max_input_tokens,
             max_output_tokens,
+            retry_amount,
+            max_backoff,
             master_key,
         ))
     }
@@ -56,6 +65,8 @@ impl ModelConfig {
         id: impl Into<String>,
         max_input_tokens: usize,
         max_output_tokens: usize,
+        retry_amount: u32,
+        max_backoff: Duration,
         master_key_path: impl AsRef<Path>,
     ) -> Result<Self, MasterKeyError> {
         let master_key = MasterKey::load_or_create(master_key_path)?;
@@ -65,6 +76,8 @@ impl ModelConfig {
             id,
             max_input_tokens,
             max_output_tokens,
+            retry_amount,
+            max_backoff,
             master_key,
         ))
     }
@@ -75,6 +88,8 @@ impl ModelConfig {
         id: impl Into<String>,
         max_input_tokens: usize,
         max_output_tokens: usize,
+        retry_amount: u32,
+        max_backoff: Duration,
         master_key: MasterKey,
     ) -> Self {
         Self {
@@ -84,6 +99,8 @@ impl ModelConfig {
             encrypted_keys: Vec::new(),
             max_input_tokens,
             max_output_tokens,
+            retry_amount,
+            max_backoff,
             master_key: Some(Arc::new(master_key)),
         }
     }
@@ -145,6 +162,14 @@ impl ModelConfig {
         self.max_output_tokens
     }
 
+    pub fn retry_amount(&self) -> u32 {
+        self.retry_amount
+    }
+
+    pub fn max_backoff(&self) -> Duration {
+        self.max_backoff
+    }
+
     pub fn encrypted_keys(&self) -> &[String] {
         &self.encrypted_keys
     }
@@ -158,6 +183,14 @@ impl ModelConfig {
             .as_deref()
             .ok_or(MasterKeyError::LockedConfig)
     }
+}
+
+fn default_retry_amount() -> u32 {
+    4
+}
+
+fn default_max_backoff() -> Duration {
+    Duration::from_secs(30)
 }
 
 /// Errors raised while loading or persisting model profiles.
@@ -223,7 +256,7 @@ struct StoredModelConfigs {
     configs: Vec<ModelConfig>,
 }
 
-/// Named model configurations persisted in the user's Cutlass config folder.
+/// Named model configurations persisted in the orchestrator's Cutlass config folder.
 pub struct ModelConfigStore {
     configs: Vec<ModelConfig>,
     active_config: String,
@@ -318,6 +351,8 @@ impl ModelConfigStore {
         id: impl Into<String>,
         max_input_tokens: usize,
         max_output_tokens: usize,
+        retry_amount: u32,
+        max_backoff: Duration,
     ) -> Result<&ModelConfig, ModelConfigStoreError> {
         let name = name.into();
         validate_new_profile(&self.configs, &name)?;
@@ -327,6 +362,8 @@ impl ModelConfigStore {
             id,
             max_input_tokens,
             max_output_tokens,
+            retry_amount,
+            max_backoff,
             &self.master_key_path,
         )?;
         let previous_active = self.active_config.clone();
@@ -490,6 +527,8 @@ mod tests {
             "model-id",
             1000,
             200,
+            4,
+            Duration::from_secs(30),
             &key_file,
         )
         .unwrap();
@@ -516,6 +555,8 @@ mod tests {
             "model-id",
             1000,
             200,
+            4,
+            Duration::from_secs(30),
             &key_file,
         )
         .unwrap();
@@ -550,6 +591,8 @@ mod tests {
                 "model-id",
                 10_000,
                 1_000,
+                5,
+                Duration::from_secs(45),
             )
             .unwrap();
         store.add_key("primary", "secret-api-key").unwrap();
@@ -562,6 +605,11 @@ mod tests {
 
         let restored = ModelConfigStore::open(&config_directory, &key_directory).unwrap();
         assert_eq!(restored.active_config().unwrap().name(), "primary");
+        assert_eq!(restored.active_config().unwrap().retry_amount(), 5);
+        assert_eq!(
+            restored.active_config().unwrap().max_backoff(),
+            Duration::from_secs(45)
+        );
         assert_eq!(
             restored.get("primary").unwrap().decrypted_keys().unwrap(),
             ["secret-api-key"]
@@ -581,10 +629,26 @@ mod tests {
         let key_directory = root.join("private-data");
         let mut store = ModelConfigStore::open(&config_directory, &key_directory).unwrap();
         store
-            .create("first", "https://one.test", "model-one", 100, 10)
+            .create(
+                "first",
+                "https://one.test",
+                "model-one",
+                100,
+                10,
+                4,
+                Duration::from_secs(30),
+            )
             .unwrap();
         store
-            .create("second", "https://two.test", "model-two", 200, 20)
+            .create(
+                "second",
+                "https://two.test",
+                "model-two",
+                200,
+                20,
+                4,
+                Duration::from_secs(30),
+            )
             .unwrap();
         store.set_active("second").unwrap();
         store.remove("first").unwrap();

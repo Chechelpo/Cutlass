@@ -1,6 +1,6 @@
+use crate::agent::sandbox::sandbox::SandboxError;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::agent::sandbox::sandbox::SandboxError;
 
 pub struct BindMount {
     pub host: PathBuf,
@@ -13,14 +13,8 @@ pub struct SandboxedFilesystem {
 }
 
 impl SandboxedFilesystem {
-    pub fn new(
-        ro_binds: Vec<BindMount>,
-        w_binds: Vec<BindMount>,
-    ) -> SandboxedFilesystem {
-        SandboxedFilesystem {
-            ro_binds,
-            w_binds,
-        }
+    pub fn new(ro_binds: Vec<BindMount>, w_binds: Vec<BindMount>) -> SandboxedFilesystem {
+        SandboxedFilesystem { ro_binds, w_binds }
     }
     pub fn ro_binds(&self) -> &[BindMount] {
         self.ro_binds.as_slice()
@@ -29,35 +23,21 @@ impl SandboxedFilesystem {
         self.w_binds.as_slice()
     }
 
-    pub fn in_read_bounds(
-        &self,
-        path: &Path,
-    ) -> bool {
-        inside_any(&self.ro_binds, path)
-            || self.in_write_bounds(path)
+    pub fn in_read_bounds(&self, path: &Path) -> bool {
+        inside_any(&self.ro_binds, path) || self.in_write_bounds(path)
     }
 
-    pub fn in_write_bounds(
-        &self,
-        path: &Path,
-    ) -> bool {
+    pub fn in_write_bounds(&self, path: &Path) -> bool {
         inside_any(&self.w_binds, path)
     }
 
-    pub fn read_file(
-        &self,
-        path: &Path,
-    ) -> Result<String, SandboxError> {
+    pub fn read_file(&self, path: &Path) -> Result<String, SandboxError> {
         let host_path = self.resolve_read_path(path)?;
 
-        fs::read_to_string(host_path)
-            .map_err(SandboxError::Io)
+        fs::read_to_string(host_path).map_err(SandboxError::Io)
     }
 
-    fn resolve_read_path(
-        &self,
-        path: &Path,
-    ) -> Result<PathBuf, SandboxError> {
+    fn resolve_read_path(&self, path: &Path) -> Result<PathBuf, SandboxError> {
         let normalized_path = normalize_path(path)
             .filter(|path| path.is_absolute())
             .ok_or_else(|| read_denied(path))?;
@@ -79,15 +59,12 @@ impl SandboxedFilesystem {
             .map(|(mount, _)| mount)
             .ok_or_else(|| read_denied(path))?;
 
-        let guest = normalize_path(&mount.guest)
-            .ok_or_else(|| read_denied(path))?;
+        let guest = normalize_path(&mount.guest).ok_or_else(|| read_denied(path))?;
         let relative = normalized_path
             .strip_prefix(guest)
             .map_err(|_| read_denied(path))?;
-        let host_root = fs::canonicalize(&mount.host)
-            .map_err(SandboxError::Io)?;
-        let host_path = fs::canonicalize(host_root.join(relative))
-            .map_err(SandboxError::Io)?;
+        let host_root = fs::canonicalize(&mount.host).map_err(SandboxError::Io)?;
+        let host_path = fs::canonicalize(host_root.join(relative)).map_err(SandboxError::Io)?;
 
         // Lexical checks alone allow a symlink inside a mount to escape it.
         // Verify the resolved target remains under the resolved host root.
@@ -100,9 +77,7 @@ impl SandboxedFilesystem {
 }
 
 fn read_denied(path: &Path) -> SandboxError {
-    SandboxError::PermissionDenied(
-        format!("Cannot read path: {}", path.display()),
-    )
+    SandboxError::PermissionDenied(format!("Cannot read path: {}", path.display()))
 }
 
 // Path logic adapted from:
@@ -133,34 +108,19 @@ fn normalize_path(path: &Path) -> Option<PathBuf> {
     Some(normalized)
 }
 
-fn is_path_within_base(
-    path: &Path,
-    base: &Path,
-) -> bool {
-    match (
-        normalize_path(path),
-        normalize_path(base),
-    ) {
-        (Some(norm_path), Some(norm_base)) => {
-            norm_path.starts_with(norm_base)
-        }
+fn is_path_within_base(path: &Path, base: &Path) -> bool {
+    match (normalize_path(path), normalize_path(base)) {
+        (Some(norm_path), Some(norm_base)) => norm_path.starts_with(norm_base),
 
         _ => false,
     }
 }
 
-fn inside_any(
-    mounts: &[BindMount],
-    path: &Path,
-) -> bool {
-    mounts.iter().any(|mount| {
-        is_path_within_base(
-            path,
-            &mount.guest,
-        )
-    })
+fn inside_any(mounts: &[BindMount], path: &Path) -> bool {
+    mounts
+        .iter()
+        .any(|mount| is_path_within_base(path, &mount.guest))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -176,26 +136,8 @@ mod tests {
 
     fn filesystem() -> SandboxedFilesystem {
         SandboxedFilesystem::new(
-            vec![
-                bind(
-                    "/usr",
-                    "/usr",
-                ),
-                bind(
-                    "/shared",
-                    "/shared",
-                ),
-            ],
-            vec![
-                bind(
-                    "/project",
-                    "/workspace",
-                ),
-                bind(
-                    "/shared",
-                    "/shared",
-                ),
-            ],
+            vec![bind("/usr", "/usr"), bind("/shared", "/shared")],
+            vec![bind("/project", "/workspace"), bind("/shared", "/shared")],
         )
     }
 
@@ -203,124 +145,68 @@ mod tests {
     fn read_workspace_allows_read_bounds() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/usr/bin/bash")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/usr/bin/bash")));
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/usr/lib/libc.so")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/usr/lib/libc.so")));
     }
 
     #[test]
     fn read_workspace_allows_write_bounds() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/workspace/file.txt")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/workspace/file.txt")));
     }
 
     #[test]
     fn write_workspace_allows_only_write_bounds() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_write_bounds(
-                Path::new("/workspace/file.txt")
-            )
-        );
+        assert!(fs.in_write_bounds(Path::new("/workspace/file.txt")));
 
-        assert!(
-            !fs.in_write_bounds(
-                Path::new("/usr/bin/bash")
-            )
-        );
+        assert!(!fs.in_write_bounds(Path::new("/usr/bin/bash")));
     }
 
     #[test]
     fn unrelated_paths_are_rejected() {
         let fs = filesystem();
 
-        assert!(
-            !fs.in_read_bounds(
-                Path::new("/etc/shadow")
-            )
-        );
+        assert!(!fs.in_read_bounds(Path::new("/etc/shadow")));
 
-        assert!(
-            !fs.in_write_bounds(
-                Path::new("/etc/shadow")
-            )
-        );
+        assert!(!fs.in_write_bounds(Path::new("/etc/shadow")));
     }
 
     #[test]
     fn exact_mount_point_is_allowed() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/usr")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/usr")));
 
-        assert!(
-            fs.in_write_bounds(
-                Path::new("/workspace")
-            )
-        );
+        assert!(fs.in_write_bounds(Path::new("/workspace")));
     }
 
     #[test]
     fn parent_escape_is_rejected() {
         let fs = filesystem();
 
-        assert!(
-            !fs.in_write_bounds(
-                Path::new("/workspace/../../etc/passwd")
-            )
-        );
+        assert!(!fs.in_write_bounds(Path::new("/workspace/../../etc/passwd")));
     }
 
     #[test]
     fn normalized_paths_are_handled() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_write_bounds(
-                Path::new("/workspace/./src/../main.rs")
-            )
-        );
+        assert!(fs.in_write_bounds(Path::new("/workspace/./src/../orchestrator.rs")));
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/usr/./bin/../lib")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/usr/./bin/../lib")));
     }
 
     #[test]
     fn shared_paths_have_both_permissions() {
         let fs = filesystem();
 
-        assert!(
-            fs.in_read_bounds(
-                Path::new("/shared/file.txt")
-            )
-        );
+        assert!(fs.in_read_bounds(Path::new("/shared/file.txt")));
 
-        assert!(
-            fs.in_write_bounds(
-                Path::new("/shared/file.txt")
-            )
-        );
+        assert!(fs.in_write_bounds(Path::new("/shared/file.txt")));
     }
 
     fn temporary_directory(test_name: &str) -> PathBuf {
@@ -360,9 +246,7 @@ mod tests {
     fn read_file_rejects_paths_outside_mounts() {
         let filesystem = filesystem();
 
-        let error = filesystem
-            .read_file(Path::new("/etc/shadow"))
-            .unwrap_err();
+        let error = filesystem.read_file(Path::new("/etc/shadow")).unwrap_err();
 
         assert!(matches!(error, SandboxError::PermissionDenied(_)));
     }
