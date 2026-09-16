@@ -1,0 +1,11 @@
+[package]
+name = "tokenizer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22"
+rustc-hash = "2"
+sentencepiece-rs = "0.2.2"
+tiktoken-rs = "0.12"
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
