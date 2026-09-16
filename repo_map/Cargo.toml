@@ -1,0 +1,13 @@
+[package]
+name = "repo_map"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+walkdir = "2"
