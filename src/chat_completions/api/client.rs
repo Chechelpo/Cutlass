@@ -19,7 +19,11 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("could not initialize the HTTP client"),
         }
     }
 

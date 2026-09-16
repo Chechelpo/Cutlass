@@ -1,6 +1,7 @@
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{ToolCall, ToolResult};
 use crate::tools::tool::DynTool;
+use crate::ui_interface::chat::{RenderText, RenderToolCall, RenderToolGroup};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolGroupKind {
@@ -15,14 +16,37 @@ pub enum ToolGroupKind {
 pub struct ToolGroup {
     kind: ToolGroupKind,
     tools: Vec<Box<dyn DynTool>>,
+    renderer: Box<dyn Fn(Vec<RenderToolCall>) -> RenderToolGroup>,
 }
 
 impl ToolGroup {
     fn new(kind: ToolGroupKind) -> Self {
+        let header = match kind {
+            ToolGroupKind::Immediate => "Tools",
+            ToolGroupKind::Deferred => "Deferred tools",
+        };
+
         Self {
             kind,
             tools: Vec::new(),
+            renderer: Box::new(move |calls| RenderToolGroup::new(RenderText::plain(header), calls)),
         }
+    }
+
+    /// Replaces this group's framework-neutral rendering declaration.
+    pub fn with_renderer(
+        mut self,
+        renderer: impl Fn(Vec<RenderToolCall>) -> RenderToolGroup + 'static,
+    ) -> Self {
+        self.set_renderer(renderer);
+        self
+    }
+
+    pub fn set_renderer(
+        &mut self,
+        renderer: impl Fn(Vec<RenderToolCall>) -> RenderToolGroup + 'static,
+    ) {
+        self.renderer = Box::new(renderer);
     }
 
     pub fn kind(&self) -> ToolGroupKind {
@@ -31,6 +55,10 @@ impl ToolGroup {
 
     pub fn tools(&self) -> &[Box<dyn DynTool>] {
         &self.tools
+    }
+
+    pub fn render(&self, calls: Vec<RenderToolCall>) -> RenderToolGroup {
+        (self.renderer)(calls)
     }
 
     pub fn execute_owned_call(&self, agent: &AgentSession, call: &ToolCall) -> Option<ToolResult> {
@@ -74,5 +102,17 @@ mod tests {
         assert_eq!(groups[0].tools().len(), 1);
         assert_eq!(groups[1].kind(), ToolGroupKind::Deferred);
         assert_eq!(groups[1].tools().len(), 1);
+    }
+
+    #[test]
+    fn lets_a_group_declare_its_rendering() {
+        let group = ToolGroup::new(ToolGroupKind::Immediate).with_renderer(|calls| {
+            RenderToolGroup::new(RenderText::markdown("### File operations"), calls)
+        });
+
+        let rendered = group.render(vec![RenderToolCall::new(RenderText::plain("Read file"))]);
+
+        assert_eq!(rendered.header, RenderText::markdown("### File operations"));
+        assert_eq!(rendered.calls.len(), 1);
     }
 }

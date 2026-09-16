@@ -19,9 +19,34 @@ pub trait WorkflowStep {
     fn possible_backtracks(&self) -> Vec<&'static dyn WorkflowStep>;
 }
 
+#[derive(Clone, Debug)]
+pub enum WorkflowEvent {
+    StepChanged { step: String },
+    Notice(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkflowStatus {
+    Ready,
+    Running,
+    WaitingForInput,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowError {
+    pub message: String,
+    pub retryable: bool,
+}
+
 pub trait Workflow {
     fn name(&self) -> &String;
     fn description(&self) -> &String;
+
+    fn status(&self) -> WorkflowStatus;
+    fn events(&mut self) -> &[WorkflowEvent];
 
     fn steps(&self) -> &Vec<&Agent>;
 }

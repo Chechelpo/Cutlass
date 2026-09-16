@@ -4,41 +4,29 @@ pub mod config;
 pub mod orchestrator;
 pub mod tools;
 pub mod tui;
-pub mod ui;
 pub mod ui_interface;
 pub mod utils;
 
-use crate::agent::presets::registry::AgentPresetRegistry;
-use crate::agent::sandbox::filesystem::{BindMount, SandboxedFilesystem};
 use crate::config::ModelConfigStore;
-use crate::orchestrator::BasicWorkflow;
-use crate::tui::{ensure_active_profile, run_tui};
-use crate::ui::UserSessionViewport;
-use crate::utils::default_ro_binds::ro_binds;
+use crate::orchestrator::workflow::session::built_in_workflows;
+use crate::tui::run_tui;
+use crate::utils::logger::init_logging;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = env::current_dir()?;
-    let agent_registry = AgentPresetRegistry::new();
-    let mut model_configs = ModelConfigStore::new()?;
-    if !ensure_active_profile(&mut model_configs)? {
-        return Ok(());
-    }
+    let log_directory = workspace.join("logs");
+    std::fs::create_dir_all(&log_directory)?;
 
-    let workflow = BasicWorkflow::new(
-        SandboxedFilesystem::new(
-            ro_binds(),
-            vec![BindMount {
-                host: workspace.clone(),
-                guest: workspace,
-            }],
-        ),
-        model_configs.active_config()?,
-        agent_registry
-            .get_with_name("Coder")
-            .expect("Failed to get Coder agent"),
+    let _logging_guard = init_logging(&log_directory);
+
+    tracing::info!(
+        workspace = %workspace.display(),
+        log_directory = %log_directory.display(),
+        "starting Cutlass"
     );
-    let user_session = UserSessionViewport::new(workflow);
-    run_tui(user_session)?;
+
+    let mut model_configs = ModelConfigStore::new()?;
+    run_tui(&mut model_configs, built_in_workflows(), workspace)?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::chat_completions::tools::{ToolCall, ToolResult};
+use crate::ui_interface::chat::RenderToolCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -79,10 +80,6 @@ impl From<AssistantMessage> for Message {
 
 impl From<ToolResult> for Message {
     fn from(result: ToolResult) -> Self {
-        let render = ToolMessageRender {
-            header: result.log_header,
-            body: result.log_body,
-        };
         let content = match result.content {
             serde_json::Value::String(content) => content,
             content => content.to_string(),
@@ -91,7 +88,7 @@ impl From<ToolResult> for Message {
         Self::Tool {
             tool_call_id: result.tool_call_id,
             content,
-            render: Some(render),
+            render: Some(result.render),
         }
     }
 }
@@ -144,14 +141,6 @@ impl Serialize for AssistantMessage {
     }
 }
 
-/// Local presentation data retained alongside a tool message but never sent
-/// to a Chat Completions provider.
-#[derive(Debug)]
-pub struct ToolMessageRender {
-    pub header: String,
-    pub body: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
@@ -170,12 +159,12 @@ pub enum Message {
         tool_call_id: String,
         content: String,
         #[serde(skip)]
-        render: Option<ToolMessageRender>,
+        render: Option<RenderToolCall>,
     },
 }
 
 impl Message {
-    pub fn tool_render(&self) -> Option<&ToolMessageRender> {
+    pub fn tool_render(&self) -> Option<&RenderToolCall> {
         match self {
             Self::Tool { render, .. } => render.as_ref(),
             _ => None,
@@ -186,6 +175,7 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_interface::chat::RenderText;
     use serde_json::json;
 
     #[test]
@@ -289,13 +279,12 @@ mod tests {
         let result = ToolResult {
             tool_call_id: "call-1".into(),
             content: json!({"answer": 42}),
-            log_header: "Calculated answer".into(),
-            log_body: None,
+            render: RenderToolCall::new(RenderText::plain("Calculated answer")),
         };
 
         let message = Message::from(result);
         let render = message.tool_render().unwrap();
-        assert_eq!(render.header, "Calculated answer");
+        assert_eq!(render.title.as_str(), "Calculated answer");
         assert_eq!(render.body, None);
         assert_eq!(
             serde_json::to_value(message).unwrap(),
@@ -312,8 +301,7 @@ mod tests {
         let result = ToolResult {
             tool_call_id: "call-1".into(),
             content: json!("plain output"),
-            log_header: "Output".into(),
-            log_body: None,
+            render: RenderToolCall::new(RenderText::plain("Output")),
         };
 
         assert_eq!(

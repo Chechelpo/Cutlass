@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::ui_interface::chat::{RenderText, RenderToolCall};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -42,24 +44,15 @@ pub struct ToolResult {
     pub content: serde_json::Value,
 
     #[serde(skip_serializing)]
-    pub log_header: String,
-
-    #[serde(skip_serializing)]
-    pub log_body: Option<String>,
+    pub render: RenderToolCall,
 }
 
 impl ToolResult {
-    pub fn success(
-        call: &ToolCall,
-        content: serde_json::Value,
-        log_header: impl Into<String>,
-        log_body: Option<String>,
-    ) -> Self {
+    pub fn success(call: &ToolCall, content: serde_json::Value, render: RenderToolCall) -> Self {
         Self {
             tool_call_id: call.id.clone(),
             content,
-            log_header: log_header.into(),
-            log_body,
+            render,
         }
     }
 
@@ -68,8 +61,8 @@ impl ToolResult {
         Self {
             tool_call_id: call.id.clone(),
             content: json!({"error": message}),
-            log_header: format!("Tool call {} failed", call.id),
-            log_body: Some(message),
+            render: RenderToolCall::new(RenderText::plain(format!("Tool call {} failed", call.id)))
+                .with_body(RenderText::plain(message)),
         }
     }
 }
@@ -94,12 +87,15 @@ mod tests {
         let result = ToolResult::success(
             &tool_call(),
             json!({"content": "ok"}),
-            "Read file",
-            Some("read 2 bytes".into()),
+            RenderToolCall::new(RenderText::plain("Read file"))
+                .with_body(RenderText::plain("read 2 bytes")),
         );
 
-        assert_eq!(result.log_header, "Read file");
-        assert_eq!(result.log_body.as_deref(), Some("read 2 bytes"));
+        assert_eq!(result.render.title.as_str(), "Read file");
+        assert_eq!(
+            result.render.body.as_ref().map(RenderText::as_str),
+            Some("read 2 bytes"),
+        );
         assert_eq!(
             serde_json::to_value(&result).unwrap(),
             json!({
@@ -114,6 +110,9 @@ mod tests {
         let result = ToolResult::failure(&tool_call(), "denied");
 
         assert_eq!(result.content, json!({"error": "denied"}));
-        assert_eq!(result.log_body.as_deref(), Some("denied"));
+        assert_eq!(
+            result.render.body.as_ref().map(RenderText::as_str),
+            Some("denied"),
+        );
     }
 }

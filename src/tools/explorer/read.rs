@@ -6,6 +6,7 @@ use crate::chat_completions::tools::{
     ChatCompletionTool, FunctionDefinition, ToolCall, ToolResult,
 };
 use crate::tools::tool::Tool;
+use crate::ui_interface::chat::{RenderText, RenderToolCall};
 
 #[derive(Debug, Deserialize)]
 pub struct ReadFileInput {
@@ -90,15 +91,14 @@ impl Tool for ReadFileTool {
         match context.sandbox.workspace().read_file(path) {
             Ok(content) => {
                 let line_count = content.lines().count();
-                let log_header = format!("Read file {} ({} lines)", input.path, line_count);
+                let title = format!("Read file {} ({} lines)", input.path, line_count);
                 ToolResult::success(
                     call,
                     json!({
                         "path": input.path,
                         "content": content,
                     }),
-                    log_header,
-                    None,
+                    RenderToolCall::new(RenderText::plain(title)),
                 )
             }
             Err(err) => ToolResult::failure(call, err.to_string()),
