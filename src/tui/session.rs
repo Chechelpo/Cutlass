@@ -50,10 +50,7 @@ impl Session {
                     workspace: SandboxedFilesystem::new(
                         workspace.clone(),
                         ro_binds(),
-                        vec![BindMount {
-                            host: workspace.clone(),
-                            guest: workspace,
-                        }],
+                        vec![BindMount::path(workspace)],
                     ),
                     model: &model,
                     agents: &agents,

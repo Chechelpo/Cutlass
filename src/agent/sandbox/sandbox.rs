@@ -32,7 +32,12 @@ impl fmt::Display for SandboxError {
 }
 
 pub trait Sandbox {
-    fn execute(&self, command: &str, args: &[String]) -> Result<CommandOutput, SandboxError>;
+    fn execute(
+        &self,
+        command: &str,
+        args: &[String],
+        writable: bool,
+    ) -> Result<CommandOutput, SandboxError>;
 
     fn workspace(&self) -> &SandboxedFilesystem;
 }
