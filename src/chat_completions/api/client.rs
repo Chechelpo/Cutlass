@@ -47,7 +47,6 @@ impl ApiClient {
         message_count = messages.len(),
         tool_count = tools.len(),
         max_output_tokens,
-        endpoint = %endpoint,
         "sending chat completion request"
     );
 
@@ -63,53 +62,49 @@ impl ApiClient {
         }))
             .send()
             .map_err(|error| {
-                let is_timeout = error.is_timeout();
-                let is_connect = error.is_connect();
-
-                let status = error
-                    .status()
-                    .map(|status| status.as_u16() as usize)
-                    .unwrap_or(0);
-
                 let message = describe_reqwest_error(&error);
+
+                // There is no HTTP response here, therefore is_retry_case()
+                // cannot apply. These are transport-level failures.
+                let is_retryable = error.is_timeout() || error.is_connect();
 
                 error!(
                 error = ?error,
                 %message,
-                is_timeout,
-                is_connect,
+                retryable = is_retryable,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "chat completion request failed"
+                "chat completion request failed before receiving an HTTP response"
             );
 
                 ApiError {
-                    // Transport-level connection failures and timeouts are
-                    // generally safe candidates for retry.
-                    is_retryable: is_timeout || is_connect,
-                    status,
+                    is_retryable,
+                    status: 0,
                     message,
                 }
             })?;
 
+        // From this point onward we have an actual HTTP response.
         let status = response.status().as_u16() as usize;
 
         let raw_body = response.text().map_err(|error| {
-            let is_timeout = error.is_timeout();
-            let is_connect = error.is_connect();
             let message = describe_reqwest_error(&error);
+
+            // The HTTP response started successfully, but reading the body failed.
+            // This is still a transport/body failure rather than an HTTP-status
+            // retry case.
+            let is_retryable = error.is_timeout() || error.is_connect();
 
             error!(
             status,
             error = ?error,
             %message,
-            is_timeout,
-            is_connect,
+            retryable = is_retryable,
             elapsed_ms = started_at.elapsed().as_millis(),
             "could not read chat completion response body"
         );
 
             ApiError {
-                is_retryable: is_timeout || is_connect,
+                is_retryable,
                 status,
                 message,
             }
@@ -117,14 +112,16 @@ impl ApiClient {
 
         if !(200..300).contains(&status) {
             let message = extract_error_message(&raw_body);
+
+            // THIS is where your RETRY_CASES table applies.
             let is_retryable = is_retry_case(status, &message);
 
             warn!(
             status,
             retryable = is_retryable,
-            error_chars = message.chars().count(),
+            error = %message,
             elapsed_ms = started_at.elapsed().as_millis(),
-            "chat completion API returned an error"
+            "chat completion API returned an HTTP error"
         );
 
             return Err(ApiError {
@@ -162,7 +159,6 @@ impl ApiClient {
             .ok_or_else(|| {
                 error!(
                 status,
-                response_bytes = raw_body.len(),
                 "chat completion response contains no assistant message"
             );
 
