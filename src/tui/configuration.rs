@@ -1,6 +1,5 @@
 use super::input::Input;
 use crate::config::{ModelConfigStore, NewModelProfile};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 pub(super) const LABELS: [&str; 6] = [
@@ -101,95 +100,7 @@ impl Configuration {
         })
     }
 
-    /// Returns the selected workflow only after connection setup and selection.
-    pub fn key(
-        &mut self,
-        key: KeyEvent,
-        store: &mut ModelConfigStore,
-        workflow_count: usize,
-    ) -> Option<usize> {
-        self.error = None;
-        match self.page {
-            SetupPage::Profiles => match key.code {
-                KeyCode::Down => {
-                    self.selected_profile =
-                        (self.selected_profile + 1).min(store.configs().len().saturating_sub(1))
-                }
-                KeyCode::Up => self.selected_profile = self.selected_profile.saturating_sub(1),
-                KeyCode::Char('n') => {
-                    self.page = SetupPage::Form;
-                    self.focused = 0;
-                },
-                KeyCode::Char('d') => {
-                    if let Some(profile) = store.configs().get(self.selected_profile) {
-                        let name = profile.name().to_owned();
-
-                        match store.remove(&name) {
-                            Ok(_) => {
-                                self.selected_profile = self
-                                    .selected_profile
-                                    .min(store.configs().len().saturating_sub(1));
-
-                                if store.configs().is_empty() {
-                                    self.page = SetupPage::Form;
-                                    self.focused = 0;
-                                }
-                            }
-
-                            Err(error) => {
-                                self.error = Some(error.to_string());
-                            }
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    if let Some(profile) = store.configs().get(self.selected_profile) {
-                        let name = profile.name().to_owned();
-                        if profile.encrypted_keys().is_empty() {
-                            self.error = Some("This profile has no API key. Press n to create a complete connection.".into());
-                        } else if let Err(error) = store.set_active(&name) {
-                            self.error = Some(error.to_string());
-                        } else {
-                            self.page = SetupPage::Workflows;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            SetupPage::Form => match key.code {
-                KeyCode::Esc if !store.configs().is_empty() => {
-                    self.fields[3] = Input::default();
-                    self.page = SetupPage::Profiles;
-                }
-                KeyCode::Tab | KeyCode::Down => self.focused = (self.focused + 1) % LABELS.len(),
-                KeyCode::BackTab | KeyCode::Up => {
-                    self.focused = (self.focused + LABELS.len() - 1) % LABELS.len()
-                }
-                KeyCode::F(2) => self.save(store),
-                KeyCode::Enter
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        || self.focused == LABELS.len() - 1 =>
-                {
-                    self.save(store)
-                }
-                KeyCode::Enter => self.focused += 1,
-                _ => self.fields[self.focused].key(key, false),
-            },
-            SetupPage::Workflows => match key.code {
-                KeyCode::Esc => self.page = SetupPage::Profiles,
-                KeyCode::Down => {
-                    self.selected_workflow =
-                        (self.selected_workflow + 1).min(workflow_count.saturating_sub(1))
-                }
-                KeyCode::Up => self.selected_workflow = self.selected_workflow.saturating_sub(1),
-                KeyCode::Enter if workflow_count > 0 => return Some(self.selected_workflow),
-                _ => {}
-            },
-        }
-        None
-    }
-
-    fn save(&mut self, store: &mut ModelConfigStore) {
+    pub(super) fn save(&mut self, store: &mut ModelConfigStore) {
         let result = self.profile().and_then(|profile| {
             let name = profile.name.clone();
             store.create_profile(profile).map_err(|e| e.to_string())?;
@@ -210,7 +121,7 @@ impl Configuration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::workflow::session::built_in_workflows;
+    use crossterm::event::{Event, KeyCode};
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
         fs,
@@ -287,10 +198,10 @@ mod tests {
             SetupPage::Form
         ));
         let mut config = form();
-        assert!(
-            config
-                .key(KeyCode::F(2).into(), &mut fixture.store, 2)
-                .is_none()
+        super::super::connection_configuration::handle_event(
+            Event::Key(KeyCode::F(2).into()),
+            &mut config,
+            &mut fixture.store,
         );
         assert!(matches!(config.page, SetupPage::Workflows));
         assert!(config.fields[3].text.is_empty());
@@ -306,9 +217,13 @@ mod tests {
                 .unwrap(),
             ["secret"]
         );
-        config.key(KeyCode::Down.into(), &mut fixture.store, 2);
+        super::super::workflow_list::handle_event(Event::Key(KeyCode::Down.into()), &mut config, 2);
         assert_eq!(
-            config.key(KeyCode::Enter.into(), &mut fixture.store, 2),
+            super::super::workflow_list::handle_event(
+                Event::Key(KeyCode::Enter.into()),
+                &mut config,
+                2,
+            ),
             Some(1)
         );
 
@@ -326,10 +241,10 @@ mod tests {
         let mut fixture = TestStore::new();
         let mut config = form();
         config.fields[3] = Input::default();
-        assert!(
-            config
-                .key(KeyCode::F(2).into(), &mut fixture.store, 1)
-                .is_none()
+        super::super::connection_configuration::handle_event(
+            Event::Key(KeyCode::F(2).into()),
+            &mut config,
+            &mut fixture.store,
         );
         assert!(config.error.is_some());
         assert!(matches!(config.page, SetupPage::Form));
@@ -338,20 +253,12 @@ mod tests {
 
     #[test]
     fn form_masks_key_and_fits_small_and_large_terminals() {
-        let fixture = TestStore::new();
         let mut config = form();
         config.focused = 3;
         for (width, height) in [(100, 32), (48, 16), (20, 5)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
-                .draw(|frame| {
-                    super::super::view::configuration(
-                        frame,
-                        &config,
-                        &fixture.store,
-                        &built_in_workflows(),
-                    )
-                })
+                .draw(|frame| super::super::connection_configuration::render(frame, &config))
                 .unwrap();
             let screen = terminal
                 .backend()
