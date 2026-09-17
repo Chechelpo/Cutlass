@@ -1,6 +1,7 @@
 use crate::agent::sandbox::sandbox::SandboxError;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info};
 
 pub struct BindMount {
     pub host: PathBuf,
@@ -8,13 +9,41 @@ pub struct BindMount {
 }
 
 pub struct SandboxedFilesystem {
+    workspace_base: PathBuf,
     ro_binds: Vec<BindMount>,
     w_binds: Vec<BindMount>,
 }
+use std::fmt;
 
+impl fmt::Debug for BindMount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindMount")
+            .field("host", &self.host)
+            .field("guest", &self.guest)
+            .finish()
+    }
+}
 impl SandboxedFilesystem {
-    pub fn new(ro_binds: Vec<BindMount>, w_binds: Vec<BindMount>) -> SandboxedFilesystem {
-        SandboxedFilesystem { ro_binds, w_binds }
+    pub fn new(
+        workspace_base: PathBuf,
+        ro_binds: Vec<BindMount>,
+        w_binds: Vec<BindMount>
+    ) -> SandboxedFilesystem {
+        info!(
+            read_only_binds = ro_binds.len(),
+            writable_binds = w_binds.len(),
+            "Created sandboxed filesystem"
+        );
+
+        debug!(
+            ?ro_binds,
+            ?w_binds,
+            "Sandbox bind configuration"
+        );
+        SandboxedFilesystem { workspace_base, ro_binds, w_binds }
+    }
+    pub fn workspace_base(&self) -> &Path {
+        &self.workspace_base
     }
     pub fn ro_binds(&self) -> &[BindMount] {
         self.ro_binds.as_slice()
@@ -23,21 +52,19 @@ impl SandboxedFilesystem {
         self.w_binds.as_slice()
     }
 
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Read
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     pub fn in_read_bounds(&self, path: &Path) -> bool {
         inside_any(&self.ro_binds, path) || self.in_write_bounds(path)
     }
-
-    pub fn in_write_bounds(&self, path: &Path) -> bool {
-        inside_any(&self.w_binds, path)
-    }
-
     pub fn read_file(&self, path: &Path) -> Result<String, SandboxError> {
         let host_path = self.resolve_read_path(path)?;
 
         fs::read_to_string(host_path).map_err(SandboxError::Io)
     }
-
-    fn resolve_read_path(&self, path: &Path) -> Result<PathBuf, SandboxError> {
+    pub(crate) fn resolve_read_path(&self, path: &Path) -> Result<PathBuf, SandboxError> {
         let normalized_path = normalize_path(path)
             .filter(|path| path.is_absolute())
             .ok_or_else(|| read_denied(path))?;
@@ -73,6 +100,125 @@ impl SandboxedFilesystem {
         }
 
         Ok(host_path)
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Write
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    pub fn in_write_bounds(&self, path: &Path) -> bool {
+        inside_any(&self.w_binds, path)
+    }
+
+    pub(crate) fn resolve_write_path(
+        &self,
+        path: &Path,
+    ) -> Result<PathBuf, SandboxError> {
+        let normalized_path = normalize_path(path)
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| {
+                SandboxError::PermissionDenied(format!(
+                    "Cannot write path: {}",
+                    path.display()
+                ))
+            })?;
+
+        let mount = self
+            .w_binds
+            .iter()
+            .filter_map(|mount| {
+                let guest = normalize_path(&mount.guest)?;
+
+                normalized_path
+                    .starts_with(&guest)
+                    .then_some((mount, guest.components().count()))
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(mount, _)| mount)
+            .ok_or_else(|| {
+                SandboxError::PermissionDenied(format!(
+                    "Cannot write path: {}",
+                    path.display()
+                ))
+            })?;
+
+        let guest = normalize_path(&mount.guest)
+            .ok_or_else(|| {
+                SandboxError::PermissionDenied(format!(
+                    "Cannot write path: {}",
+                    path.display()
+                ))
+            })?;
+
+        let relative = normalized_path
+            .strip_prefix(&guest)
+            .map_err(|_| {
+                SandboxError::PermissionDenied(format!(
+                    "Cannot write path: {}",
+                    path.display()
+                ))
+            })?;
+
+        let host_root = fs::canonicalize(&mount.host)
+            .map_err(SandboxError::Io)?;
+
+        let host_path = host_root.join(relative);
+
+        let parent = host_path.parent()
+            .ok_or_else(|| {
+                SandboxError::PermissionDenied(format!(
+                    "Cannot write path: {}",
+                    path.display()
+                ))
+            })?;
+
+        let canonical_parent = fs::canonicalize(parent)
+            .map_err(SandboxError::Io)?;
+
+        if !canonical_parent.starts_with(&host_root) {
+            return Err(SandboxError::PermissionDenied(format!(
+                "Cannot write path: {}",
+                path.display()
+            )));
+        }
+
+        Ok(canonical_parent.join(
+            host_path.file_name()
+                .ok_or_else(|| {
+                    SandboxError::PermissionDenied(format!(
+                        "Cannot write path: {}",
+                        path.display()
+                    ))
+                })?
+        ))
+    }
+
+    pub fn write_file(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> Result<(), SandboxError> {
+        let host_path = self.resolve_write_path(path)?;
+
+        fs::write(host_path, content)
+            .map_err(SandboxError::Io)
+    }
+    
+    pub fn create_file(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> Result<(), SandboxError> {
+        let host_path = self.resolve_write_path(path)?;
+
+        if host_path.exists() {
+            return Err(SandboxError::PermissionDenied(format!(
+                "File already exists: {}",
+                path.display()
+            )));
+        }
+
+        fs::write(host_path, content)
+            .map_err(SandboxError::Io)
     }
 }
 
@@ -136,8 +282,15 @@ mod tests {
 
     fn filesystem() -> SandboxedFilesystem {
         SandboxedFilesystem::new(
-            vec![bind("/usr", "/usr"), bind("/shared", "/shared")],
-            vec![bind("/project", "/workspace"), bind("/shared", "/shared")],
+            PathBuf::from("/workspace"),
+            vec![
+                bind("/usr", "/usr"),
+                bind("/shared", "/shared"),
+            ],
+            vec![
+                bind("/project", "/workspace"),
+                bind("/shared", "/shared"),
+            ],
         )
     }
 
@@ -146,7 +299,6 @@ mod tests {
         let fs = filesystem();
 
         assert!(fs.in_read_bounds(Path::new("/usr/bin/bash")));
-
         assert!(fs.in_read_bounds(Path::new("/usr/lib/libc.so")));
     }
 
@@ -162,7 +314,6 @@ mod tests {
         let fs = filesystem();
 
         assert!(fs.in_write_bounds(Path::new("/workspace/file.txt")));
-
         assert!(!fs.in_write_bounds(Path::new("/usr/bin/bash")));
     }
 
@@ -171,7 +322,6 @@ mod tests {
         let fs = filesystem();
 
         assert!(!fs.in_read_bounds(Path::new("/etc/shadow")));
-
         assert!(!fs.in_write_bounds(Path::new("/etc/shadow")));
     }
 
@@ -180,7 +330,6 @@ mod tests {
         let fs = filesystem();
 
         assert!(fs.in_read_bounds(Path::new("/usr")));
-
         assert!(fs.in_write_bounds(Path::new("/workspace")));
     }
 
@@ -195,9 +344,13 @@ mod tests {
     fn normalized_paths_are_handled() {
         let fs = filesystem();
 
-        assert!(fs.in_write_bounds(Path::new("/workspace/./src/../orchestrator.rs")));
+        assert!(fs.in_write_bounds(
+            Path::new("/workspace/./src/../orchestrator.rs")
+        ));
 
-        assert!(fs.in_read_bounds(Path::new("/usr/./bin/../lib")));
+        assert!(fs.in_read_bounds(
+            Path::new("/usr/./bin/../lib")
+        ));
     }
 
     #[test]
@@ -205,7 +358,6 @@ mod tests {
         let fs = filesystem();
 
         assert!(fs.in_read_bounds(Path::new("/shared/file.txt")));
-
         assert!(fs.in_write_bounds(Path::new("/shared/file.txt")));
     }
 
@@ -214,10 +366,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+
         let path = std::env::temp_dir().join(format!(
             "cutlass-{test_name}-{}-{unique}",
             std::process::id(),
         ));
+
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -225,12 +379,17 @@ mod tests {
     #[test]
     fn read_file_translates_guest_path_to_host_path() {
         let host = temporary_directory("read-mapping");
+
         fs::write(host.join("message.txt"), "from host").unwrap();
+
         let filesystem = SandboxedFilesystem::new(
-            vec![BindMount {
-                host: host.clone(),
-                guest: PathBuf::from("/workspace"),
-            }],
+            PathBuf::from("/workspace"),
+            vec![
+                BindMount {
+                    host: host.clone(),
+                    guest: PathBuf::from("/workspace"),
+                },
+            ],
             vec![],
         );
 
@@ -239,6 +398,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(content, "from host");
+
         fs::remove_dir_all(host).unwrap();
     }
 
@@ -246,9 +406,14 @@ mod tests {
     fn read_file_rejects_paths_outside_mounts() {
         let filesystem = filesystem();
 
-        let error = filesystem.read_file(Path::new("/etc/shadow")).unwrap_err();
+        let error = filesystem
+            .read_file(Path::new("/etc/shadow"))
+            .unwrap_err();
 
-        assert!(matches!(error, SandboxError::PermissionDenied(_)));
+        assert!(matches!(
+            error,
+            SandboxError::PermissionDenied(_)
+        ));
     }
 
     #[cfg(unix)]
@@ -258,13 +423,18 @@ mod tests {
 
         let host = temporary_directory("read-symlink-host");
         let outside = temporary_directory("read-symlink-outside");
+
         fs::write(outside.join("secret.txt"), "secret").unwrap();
         symlink(&outside, host.join("escape")).unwrap();
+
         let filesystem = SandboxedFilesystem::new(
-            vec![BindMount {
-                host: host.clone(),
-                guest: PathBuf::from("/workspace"),
-            }],
+            PathBuf::from("/workspace"),
+            vec![
+                BindMount {
+                    host: host.clone(),
+                    guest: PathBuf::from("/workspace"),
+                },
+            ],
             vec![],
         );
 
@@ -272,7 +442,11 @@ mod tests {
             .read_file(Path::new("/workspace/escape/secret.txt"))
             .unwrap_err();
 
-        assert!(matches!(error, SandboxError::PermissionDenied(_)));
+        assert!(matches!(
+            error,
+            SandboxError::PermissionDenied(_)
+        ));
+
         fs::remove_dir_all(host).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }

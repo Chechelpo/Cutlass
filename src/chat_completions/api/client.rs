@@ -1,6 +1,6 @@
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
-
+use tracing::{debug, error};
 use crate::chat_completions::api::retry_cases::is_retry_case;
 use crate::chat_completions::messages::{AssistantMessage, Message};
 use crate::chat_completions::tools::ChatCompletionTool;
@@ -38,21 +38,29 @@ impl ApiClient {
     ) -> Result<AssistantMessage, ApiError> {
         let endpoint = format!("{}/chat/completions", host.trim_end_matches('/'));
 
+        debug!(
+        model = %model,
+        "Sending chat completion request"
+    );
+
         let response = self
             .client
             .post(endpoint)
             .bearer_auth(api_key)
             .json(&json!({
-                "model": model,
-                "messages": messages,
-                "max_completion_tokens": max_output_tokens,
-                "tools": tools,
-            }))
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": max_output_tokens,
+            "tools": tools,
+        }))
             .send()
-            .map_err(|error| ApiError {
-                is_retryable: false,
-                status: 0,
-                message: error.to_string(),
+            .map_err(|error| {
+                error!(error = %error, "Chat completion request failed");
+                ApiError {
+                    is_retryable: false,
+                    status: 0,
+                    message: error.to_string(),
+                }
             })?;
 
         let status = response.status().as_u16() as usize;
@@ -66,12 +74,23 @@ impl ApiClient {
         if !(200..300).contains(&status) {
             let message = extract_error_message(&raw_body);
 
+            error!(
+            status,
+            retryable = is_retry_case(status, &message),
+            "Chat completion API returned an error"
+        );
+
             return Err(ApiError {
                 is_retryable: is_retry_case(status, &message),
                 status,
                 message,
             });
         }
+
+        debug!(
+        status,
+        "Chat completion request succeeded"
+    );
 
         let body: Value = serde_json::from_str(&raw_body).map_err(|error| ApiError {
             is_retryable: false,

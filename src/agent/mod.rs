@@ -6,3 +6,4 @@ mod names;
 pub mod presets;
 pub mod sandbox;
 mod steering;
+pub mod prompt;

@@ -2,5 +2,8 @@
 /logs
 .codex
 
+/repo_map/source_inspiration
+/tokenizer/source_inspiration
+
 .Cargo.lock
 .idea

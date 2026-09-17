@@ -1,35 +1,52 @@
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{ToolCall, ToolResult};
 use crate::tools::tool::DynTool;
-use crate::ui_interface::chat::{RenderText, RenderToolCall, RenderToolGroup};
+use crate::ui_interface::chat::{
+    RenderColor, RenderText, RenderToolCall, RenderToolGroup, ToolGroupColorScheme,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolGroupKind {
-    Immediate,
-    Deferred,
+    Explorer,
+    Editing
 }
 
-/// A collection of tools with the same execution behavior.
+/// An explicitly configured collection of related tools rendered together.
 ///
-/// Tool groups execute calls; message history owns the resulting wire content
-/// and local render metadata.
+/// Membership is chosen by the agent preset, independently of whether a tool
+/// is deferred. The group owns the presentation of its collected call results.
 pub struct ToolGroup {
     kind: ToolGroupKind,
     tools: Vec<Box<dyn DynTool>>,
     renderer: Box<dyn Fn(Vec<RenderToolCall>) -> RenderToolGroup>,
+    color_scheme: ToolGroupColorScheme,
 }
 
 impl ToolGroup {
-    fn new(kind: ToolGroupKind) -> Self {
+    pub fn new(kind: ToolGroupKind, tools: Vec<Box<dyn DynTool>>) -> Self {
         let header = match kind {
-            ToolGroupKind::Immediate => "Tools",
-            ToolGroupKind::Deferred => "Deferred tools",
+            ToolGroupKind::Explorer => "Explored",
+            ToolGroupKind::Editing => "Edited",
         };
 
         Self {
             kind,
-            tools: Vec::new(),
+            tools,
             renderer: Box::new(move |calls| RenderToolGroup::new(RenderText::plain(header), calls)),
+            color_scheme: match kind {
+                ToolGroupKind::Explorer => ToolGroupColorScheme {
+                    header: RenderColor::Cyan,
+                    connector: RenderColor::Blue,
+                    title: RenderColor::Default,
+                    body: RenderColor::Muted,
+                },
+                ToolGroupKind::Editing => ToolGroupColorScheme {
+                    header: RenderColor::Green,
+                    connector: RenderColor::Green,
+                    title: RenderColor::Default,
+                    body: RenderColor::Muted
+                }
+            },
         }
     }
 
@@ -49,6 +66,15 @@ impl ToolGroup {
         self.renderer = Box::new(renderer);
     }
 
+    pub fn with_color_scheme(mut self, color_scheme: ToolGroupColorScheme) -> Self {
+        self.set_color_scheme(color_scheme);
+        self
+    }
+
+    pub fn set_color_scheme(&mut self, color_scheme: ToolGroupColorScheme) {
+        self.color_scheme = color_scheme;
+    }
+
     pub fn kind(&self) -> ToolGroupKind {
         self.kind
     }
@@ -58,7 +84,7 @@ impl ToolGroup {
     }
 
     pub fn render(&self, calls: Vec<RenderToolCall>) -> RenderToolGroup {
-        (self.renderer)(calls)
+        (self.renderer)(calls).with_color_scheme(self.color_scheme)
     }
 
     pub fn execute_owned_call(&self, agent: &AgentSession, call: &ToolCall) -> Option<ToolResult> {
@@ -69,44 +95,38 @@ impl ToolGroup {
     }
 }
 
-/// Route preset-instantiated tools into the stable default groups.
-pub fn into_groups(tools: Vec<Box<dyn DynTool>>) -> Vec<ToolGroup> {
-    let mut immediate = ToolGroup::new(ToolGroupKind::Immediate);
-    let mut deferred = ToolGroup::new(ToolGroupKind::Deferred);
-
-    for tool in tools {
-        if tool.deferred() {
-            deferred.tools.push(tool);
-        } else {
-            immediate.tools.push(tool);
-        }
-    }
-
-    vec![immediate, deferred]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::explorer::ReadFileTool;
+    use crate::tools::explorer::{ReadFileTool, TreeTool};
 
     #[test]
-    fn routes_configured_tool_instances_into_default_groups() {
-        let groups = into_groups(vec![
-            Box::new(ReadFileTool::all_actions(false)),
-            Box::new(ReadFileTool::all_actions(true)),
-        ]);
+    fn related_tools_share_a_group_regardless_of_deferred_execution() {
+        let group = ToolGroup::new(
+            ToolGroupKind::Explorer,
+            vec![
+                Box::new(ReadFileTool::all_actions(false)),
+                Box::new(TreeTool::all_actions(true)),
+            ],
+        );
 
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].kind(), ToolGroupKind::Immediate);
-        assert_eq!(groups[0].tools().len(), 1);
-        assert_eq!(groups[1].kind(), ToolGroupKind::Deferred);
-        assert_eq!(groups[1].tools().len(), 1);
+        assert_eq!(group.kind(), ToolGroupKind::Explorer);
+        assert_eq!(group.tools().len(), 2);
+        assert!(!group.tools()[0].deferred());
+        assert!(group.tools()[1].deferred());
+        assert_eq!(
+            group.render(Vec::new()).header,
+            RenderText::plain("Explored")
+        );
+        assert_eq!(
+            group.render(Vec::new()).color_scheme.header,
+            RenderColor::Cyan
+        );
     }
 
     #[test]
     fn lets_a_group_declare_its_rendering() {
-        let group = ToolGroup::new(ToolGroupKind::Immediate).with_renderer(|calls| {
+        let group = ToolGroup::new(ToolGroupKind::Explorer, Vec::new()).with_renderer(|calls| {
             RenderToolGroup::new(RenderText::markdown("### File operations"), calls)
         });
 
@@ -114,5 +134,18 @@ mod tests {
 
         assert_eq!(rendered.header, RenderText::markdown("### File operations"));
         assert_eq!(rendered.calls.len(), 1);
+    }
+
+    #[test]
+    fn lets_a_group_override_its_color_scheme() {
+        let scheme = ToolGroupColorScheme {
+            header: RenderColor::Magenta,
+            connector: RenderColor::Red,
+            title: RenderColor::Yellow,
+            body: RenderColor::Green,
+        };
+        let group = ToolGroup::new(ToolGroupKind::Explorer, Vec::new()).with_color_scheme(scheme);
+
+        assert_eq!(group.render(Vec::new()).color_scheme, scheme);
     }
 }

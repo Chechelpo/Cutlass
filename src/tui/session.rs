@@ -48,6 +48,7 @@ impl Session {
                 let agents = AgentPresetRegistry::new();
                 let context = WorkflowContext {
                     workspace: SandboxedFilesystem::new(
+                        workspace.clone(),
                         ro_binds(),
                         vec![BindMount {
                             host: workspace.clone(),

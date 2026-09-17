@@ -12,6 +12,7 @@ use crate::ui_interface::chat::{
     RenderMessageSection, RenderText, RenderToolCall, RenderToolGroup,
 };
 use names::get_agent_name;
+use tracing::debug;
 
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -43,7 +44,8 @@ impl<'a> AgentSession<'a> {
         config: &'a ModelConfig,
         preset: &'a Agent,
     ) -> Self {
-        let system_prompt = (preset.system_prompt)(&sandboxed_filesystem);
+        let system_prompt = preset.system_prompt.build(&sandboxed_filesystem);
+        debug!("Initiated agent session with prompt\n{}", system_prompt);
         AgentSession {
             name: get_agent_name(),
             preset,
@@ -135,11 +137,13 @@ impl<'a> AgentSession<'a> {
                 is_retryable: false,
                 message: error.to_string(),
             })?;
+
         let key = keys.first().ok_or_else(|| ApiError {
             status: 0,
             is_retryable: false,
             message: "The selected connection has no API key".into(),
         })?;
+
         let mut retries_remaining = self.model_config.retry_amount();
         let tools = self
             .tool_groups()
@@ -279,6 +283,7 @@ impl<'a> AgentSession<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::prompt::SysPrompt;
     use crate::chat_completions::tools::{ChatCompletionTool, FunctionDefinition, ToolCall};
     use crate::tools::tool::Tool;
     use serde_json::{Value, json};
@@ -380,12 +385,12 @@ mod tests {
         .unwrap()
     }
 
-    fn agent(tools: Vec<Box<dyn crate::tools::tool::DynTool>>) -> Agent {
+    fn agent(tool_groups: Vec<ToolGroup>) -> Agent {
         Agent::new(
             "Test agent".into(),
             "Agent-session test fixture".into(),
-            |_| "test system prompt".into(),
-            tools,
+            SysPrompt::empty(),
+            tool_groups,
             Vec::new(),
         )
     }
@@ -413,7 +418,7 @@ mod tests {
 
     fn session<'a>(config: &'a ModelConfig, agent: &'a Agent) -> AgentSession<'a> {
         AgentSession::new(
-            SandboxedFilesystem::new(Vec::new(), Vec::new()),
+            SandboxedFilesystem::new(PathBuf::new(), Vec::new(), Vec::new()),
             config,
             agent,
         )
@@ -467,24 +472,32 @@ mod tests {
         let config = model_config(&directory);
         let executions = Rc::new(RefCell::new(Vec::new()));
         let mut agent = agent(vec![
-            Box::new(MockTool {
-                name: "first",
-                deferred: false,
-                executions: executions.clone(),
-            }),
-            Box::new(MockTool {
-                name: "later",
-                deferred: true,
-                executions: executions.clone(),
-            }),
-            Box::new(MockTool {
-                name: "second",
-                deferred: false,
-                executions: executions.clone(),
-            }),
+            ToolGroup::new(
+                ToolGroupKind::Explorer,
+                vec![
+                    Box::new(MockTool {
+                        name: "first",
+                        deferred: false,
+                        executions: executions.clone(),
+                    }),
+                    Box::new(MockTool {
+                        name: "second",
+                        deferred: true,
+                        executions: executions.clone(),
+                    }),
+                ],
+            ),
+            ToolGroup::new(
+                ToolGroupKind::Explorer,
+                vec![Box::new(MockTool {
+                    name: "later",
+                    deferred: false,
+                    executions: executions.clone(),
+                })],
+            ),
         ]);
         agent.tool_groups[0].set_renderer(|calls| {
-            RenderToolGroup::new(RenderText::markdown("### Immediate calls"), calls)
+            RenderToolGroup::new(RenderText::markdown("### Exploration"), calls)
         });
         let mut session = session(&config, &agent);
 
@@ -503,11 +516,11 @@ mod tests {
             render,
         } = &session.events()[1]
         else {
-            panic!("expected immediate tool group");
+            panic!("expected first configured explorer group");
         };
         assert_eq!(*group_index, 0);
-        assert_eq!(*kind, ToolGroupKind::Immediate);
-        assert_eq!(render.header, RenderText::markdown("### Immediate calls"));
+        assert_eq!(*kind, ToolGroupKind::Explorer);
+        assert_eq!(render.header, RenderText::markdown("### Exploration"));
         assert_eq!(
             render
                 .calls
@@ -517,10 +530,16 @@ mod tests {
             ["first", "second"],
         );
 
-        let AgentEvent::ToolGroup { kind, render, .. } = &session.events()[2] else {
-            panic!("expected deferred tool group");
+        let AgentEvent::ToolGroup {
+            group_index,
+            kind,
+            render,
+        } = &session.events()[2]
+        else {
+            panic!("expected second configured explorer group");
         };
-        assert_eq!(*kind, ToolGroupKind::Deferred);
+        assert_eq!(*group_index, 1);
+        assert_eq!(*kind, ToolGroupKind::Explorer);
         assert_eq!(
             render
                 .calls

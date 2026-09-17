@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::json;
-
+use tracing::{error, info};
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{
     ChatCompletionTool, FunctionDefinition, ToolCall, ToolResult,
@@ -91,7 +91,8 @@ impl Tool for ReadFileTool {
         match context.sandbox.workspace().read_file(path) {
             Ok(content) => {
                 let line_count = content.lines().count();
-                let title = format!("Read file {} ({} lines)", input.path, line_count);
+                let title = format!("**Read** file _{}_ ({} lines)", input.path, line_count);
+                info!("Read file: \n{} ({} lines)", input.path, line_count);
                 ToolResult::success(
                     call,
                     json!({
@@ -101,7 +102,10 @@ impl Tool for ReadFileTool {
                     RenderToolCall::new(RenderText::plain(title)),
                 )
             }
-            Err(err) => ToolResult::failure(call, err.to_string()),
+            Err(err) => {
+                error!("Error reading file {}: {}", path.display(), err);
+                ToolResult::failure(call, err.to_string())
+            },
         }
     }
 

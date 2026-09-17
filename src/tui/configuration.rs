@@ -119,6 +119,28 @@ impl Configuration {
                 KeyCode::Char('n') => {
                     self.page = SetupPage::Form;
                     self.focused = 0;
+                },
+                KeyCode::Char('d') => {
+                    if let Some(profile) = store.configs().get(self.selected_profile) {
+                        let name = profile.name().to_owned();
+
+                        match store.remove(&name) {
+                            Ok(_) => {
+                                self.selected_profile = self
+                                    .selected_profile
+                                    .min(store.configs().len().saturating_sub(1));
+
+                                if store.configs().is_empty() {
+                                    self.page = SetupPage::Form;
+                                    self.focused = 0;
+                                }
+                            }
+
+                            Err(error) => {
+                                self.error = Some(error.to_string());
+                            }
+                        }
+                    }
                 }
                 KeyCode::Enter => {
                     if let Some(profile) = store.configs().get(self.selected_profile) {

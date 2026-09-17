@@ -12,15 +12,21 @@ use crate::orchestrator::workflow::session::built_in_workflows;
 use crate::tui::run_tui;
 use crate::utils::logger::init_logging;
 use std::env;
+use tracing::info;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = env::current_dir()?;
     let log_directory = workspace.join("logs");
-    std::fs::create_dir_all(&log_directory)?;
+    info!(
+        "Initialized workspace at {}.\nLogs stored at {}",
+        workspace.display(),
+        log_directory.display()
+    );
 
+    std::fs::create_dir_all(&log_directory)?;
     let _logging_guard = init_logging(&log_directory);
 
-    tracing::info!(
+    info!(
         workspace = %workspace.display(),
         log_directory = %log_directory.display(),
         "starting Cutlass"

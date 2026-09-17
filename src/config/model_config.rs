@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 use zeroize::Zeroize;
 
 use super::configs::get_config_location;
@@ -186,6 +187,18 @@ impl ModelConfig {
     }
 }
 
+impl fmt::Display for ModelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({}) - {}",
+            self.name,
+            self.id,
+            self.host_url,
+        )
+    }
+}
+
 fn default_retry_amount() -> u32 {
     4
 }
@@ -290,6 +303,7 @@ impl ModelConfigStore {
             get_config_location().ok_or(ModelConfigStoreError::ConfigDirectoryUnavailable)?;
         let directories = directories::ProjectDirs::from("dev", "cutlass", "Cutlass")
             .ok_or(ModelConfigStoreError::ConfigDirectoryUnavailable)?;
+
         Self::open(config_directory, directories.data_local_dir())
     }
 
@@ -299,32 +313,45 @@ impl ModelConfigStore {
         config_directory: impl AsRef<Path>,
         key_directory: impl AsRef<Path>,
     ) -> Result<Self, ModelConfigStoreError> {
+        info!("Opening model config store");
+
         let config_directory = config_directory.as_ref();
         let key_directory = key_directory.as_ref();
+
         if config_directory == key_directory {
+            error!("Config directory and key directory are the same");
             return Err(ModelConfigStoreError::SharedKeyDirectory);
         }
+
         create_private_directory(config_directory)?;
         create_private_directory(key_directory)?;
+
         let path = config_directory.join("models.toml");
         let master_key_path = key_directory.join("master.key");
 
         let (mut configs, active_config) = if path.exists() {
             let source = fs::read_to_string(&path)?;
+
             let stored: StoredModelConfigs =
                 toml::from_str(&source).map_err(ModelConfigStoreError::Decode)?;
+
             if stored.version != 1 {
+                error!(
+                version = stored.version,
+                "Unsupported model config version"
+            );
                 return Err(ModelConfigStoreError::UnsupportedVersion(stored.version));
             }
+
             validate_loaded_profiles(&stored.configs, stored.active_config.as_deref())?;
+
             (stored.configs, stored.active_config.unwrap_or_default())
         } else {
             (Vec::new(), String::new())
         };
 
-        // This creates one shared key for a new store and reattaches that same
-        // key to every configuration loaded from disk.
         MasterKey::load_or_create(&master_key_path)?;
+
         for config in &mut configs {
             config.unlock_with_master_key_file(&master_key_path)?;
         }
@@ -335,9 +362,16 @@ impl ModelConfigStore {
             path,
             master_key_path,
         };
+
         if !store.path.exists() {
             store.persist()?;
         }
+
+        info!(
+            profiles = store.configs.len(),
+            "Model config store opened"
+        );
+
         Ok(store)
     }
 
@@ -385,6 +419,7 @@ impl ModelConfigStore {
             max_backoff,
             &self.master_key_path,
         )?;
+        info!("New connection profile {} created: \n{}", config.name, config);
         let previous_active = self.active_config.clone();
         if self.configs.is_empty() {
             self.active_config = name;
@@ -399,14 +434,14 @@ impl ModelConfigStore {
     }
 
     /// Creates and persists a profile and its encrypted API key atomically.
-    ///
-    /// Unlike calling [`create`](Self::create) and [`add_key`](Self::add_key)
-    /// separately, a failure cannot leave a profile without credentials.
     pub fn create_profile(
         &mut self,
         profile: NewModelProfile,
     ) -> Result<&ModelConfig, ModelConfigStoreError> {
+        info!(profile = %profile.name, "Creating model profile");
+
         validate_new_profile(&self.configs, &profile.name)?;
+
         let mut config = ModelConfig::with_master_key_file(
             &profile.name,
             &profile.host_url,
@@ -417,18 +452,32 @@ impl ModelConfigStore {
             profile.max_backoff,
             &self.master_key_path,
         )?;
+
         config.add_key(&profile.api_key)?;
 
         let previous_active = self.active_config.clone();
+
         if self.configs.is_empty() {
             self.active_config = profile.name.clone();
         }
+
         self.configs.push(config);
+
         if let Err(error) = self.persist() {
+            error!(
+                profile = %profile.name,
+                error = %error,
+                "Failed to persist model profile, rolling back"
+            );
+
             self.configs.pop();
             self.active_config = previous_active;
+
             return Err(error);
         }
+
+        info!(profile = %profile.name, "Model profile created");
+
         Ok(self.configs.last().expect("a config was just inserted"))
     }
 
@@ -438,8 +487,10 @@ impl ModelConfigStore {
         let previous = std::mem::replace(&mut self.active_config, name.into());
         if let Err(error) = self.persist() {
             self.active_config = previous;
+            error!("No profile with name {} to set active", name);
             return Err(error);
         }
+        info!("New active connection is {}", name);
         Ok(())
     }
 
@@ -449,8 +500,10 @@ impl ModelConfigStore {
         self.configs[index].add_key(key)?;
         if let Err(error) = self.persist() {
             self.configs[index].remove_last_key();
+            error!("No profile with name {} when adding key", profile);
             return Err(error);
         }
+        info!("Added new key to profile {}", profile);
         Ok(())
     }
 
@@ -469,8 +522,10 @@ impl ModelConfigStore {
         if let Err(error) = self.persist() {
             self.configs.insert(index, removed);
             self.active_config = previous_active;
+            error!("No connection with name {} to remove", name);
             return Err(error);
         }
+        info!("Removed connection profile {}", removed.name);
         Ok(removed)
     }
 

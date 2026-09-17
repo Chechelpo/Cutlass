@@ -3,13 +3,16 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 pub fn init_logging(log_directory: &Path) -> WorkerGuard {
-    let file = tracing_appender::rolling::daily(log_directory, "cutlass.log");
+    let file = tracing_appender::rolling::never(
+        log_directory,
+        "cutlass.log",
+    );
 
     let (writer, guard) = tracing_appender::non_blocking(file);
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("trace")),
         )
         .with_writer(writer)
         .with_ansi(false)
