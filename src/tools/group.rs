@@ -8,7 +8,8 @@ use crate::ui_interface::chat::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolGroupKind {
     Explorer,
-    Editing
+    Editing,
+    Running,
 }
 
 /// An explicitly configured collection of related tools rendered together.
@@ -27,6 +28,7 @@ impl ToolGroup {
         let header = match kind {
             ToolGroupKind::Explorer => "Explored",
             ToolGroupKind::Editing => "Edited",
+            ToolGroupKind::Running => "Ran",
         };
 
         Self {
@@ -45,7 +47,13 @@ impl ToolGroup {
                     connector: RenderColor::Green,
                     title: RenderColor::Default,
                     body: RenderColor::Muted
-                }
+                },
+                ToolGroupKind::Running => ToolGroupColorScheme {
+                    header: RenderColor::Yellow,
+                    connector: RenderColor::Yellow,
+                    title: RenderColor::Default,
+                    body: RenderColor::Muted,
+                },
             },
         }
     }

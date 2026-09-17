@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
-use crate::agent::sandbox::sandbox::{Sandbox, SandboxError};
+use crate::agent::sandbox::sandbox::{CommandOutput, Sandbox, SandboxError};
 
 pub struct BwrapSandbox {
     workspace: SandboxedFilesystem,
@@ -14,7 +14,7 @@ impl BwrapSandbox {
 }
 
 impl Sandbox for BwrapSandbox {
-    fn execute(&self, command: &str, args: &[String]) -> Result<(), SandboxError> {
+    fn execute(&self, command: &str, args: &[String]) -> Result<CommandOutput, SandboxError> {
         let mut cmd = Command::new("bwrap");
 
         // Basic isolation
@@ -31,6 +31,10 @@ impl Sandbox for BwrapSandbox {
             cmd.arg("--bind").arg(&mount.host).arg(&mount.guest);
         }
 
+        if !self.workspace.workspace_base().as_os_str().is_empty() {
+            cmd.arg("--chdir").arg(self.workspace.workspace_base());
+        }
+
         // Command to execute inside sandbox
         cmd.arg("--");
         cmd.arg(command);
@@ -39,16 +43,13 @@ impl Sandbox for BwrapSandbox {
             cmd.arg(arg);
         }
 
-        let status = cmd.status().map_err(SandboxError::Io)?;
+        let output = cmd.output().map_err(SandboxError::Io)?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            Err(SandboxError::ExecutionFailed(format!(
-                "command exited with status {}",
-                status
-            )))
-        }
+        Ok(CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code(),
+        })
     }
 
     fn workspace(&self) -> &SandboxedFilesystem {

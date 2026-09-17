@@ -5,6 +5,7 @@ use crate::tools::group::{ToolGroup, ToolGroupKind};
 use tracing::{debug, info};
 use crate::tools::editing::edit::EditFileTool;
 use crate::tools::editing::write::CreateFileTool;
+use crate::tools::running::BashTool;
 
 pub struct AgentPresetRegistry {
     all_agents: Vec<Agent>,
@@ -47,7 +48,11 @@ impl AgentPresetRegistry {
                                 Box::new(EditFileTool::all_actions(false)),
                                 Box::new(CreateFileTool::all_actions(false)),
                             ]
-                        )
+                        ),
+                        ToolGroup::new(
+                            ToolGroupKind::Running,
+                            vec![Box::new(BashTool::all_actions(false))],
+                        ),
                     ],
                     vec![],
                 ),
