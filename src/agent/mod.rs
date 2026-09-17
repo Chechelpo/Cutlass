@@ -5,5 +5,5 @@ pub mod agent_session;
 mod names;
 pub mod presets;
 pub mod sandbox;
-mod steering;
+pub mod steering;
 pub mod prompt;

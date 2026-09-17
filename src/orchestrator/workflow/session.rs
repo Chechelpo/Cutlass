@@ -1,6 +1,7 @@
 //! Executable workflow factories. Configuration and selection create no sessions.
 
 use super::{BasicWorkflow, workflow::WorkflowError};
+use crate::agent::steering::SteeringInbox;
 use crate::agent::presets::registry::AgentPresetRegistry;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::config::ModelConfig;
@@ -15,6 +16,11 @@ pub trait WorkflowSession {
         prompt: String,
         emit: &mut dyn FnMut(RenderMessageSection),
     ) -> Result<(), WorkflowError>;
+
+    /// A shared handle used to steer or stop the currently running turn.
+    fn steering_inbox(&self) -> Option<SteeringInbox> {
+        None
+    }
 }
 
 pub struct WorkflowContext<'a> {
@@ -70,5 +76,9 @@ impl WorkflowSession for BasicWorkflow<'_> {
                 message: error.message,
                 retryable: error.is_retryable,
             })
+    }
+
+    fn steering_inbox(&self) -> Option<SteeringInbox> {
+        Some(self.session().steering_inbox.clone())
     }
 }

@@ -123,8 +123,7 @@ impl<'a> AgentSession<'a> {
         self.emit_since(&mut cursor, emit);
 
         loop {
-            if self.steering_inbox.end_turn_called() {
-                self.steering_inbox.acknowledge_end_turn();
+            if self.steering_inbox.take_end_turn() {
                 info!("agent turn cancelled");
                 return Ok(());
             }
@@ -137,11 +136,22 @@ impl<'a> AgentSession<'a> {
             }
 
             let response = self.run_turn(&client)?;
+            if self.steering_inbox.take_end_turn() {
+                info!("agent turn cancelled");
+                return Ok(());
+            }
             if response.is_final() {
-                info!("assistant produced final response");
                 self.chat_history.push(Message::from(response));
                 self.record_latest_message();
                 self.emit_since(&mut cursor, emit);
+                if let Some(message) = self.steering_inbox.drain_steering_message() {
+                    info!(message_chars = message.chars().count(), "applying steering message");
+                    self.chat_history.push(Message::User { content: message });
+                    self.record_latest_message();
+                    self.emit_since(&mut cursor, emit);
+                    continue;
+                }
+                info!("assistant produced final response");
                 return Ok(());
             }
 

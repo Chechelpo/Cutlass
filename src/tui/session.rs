@@ -3,6 +3,7 @@ use super::configuration::Configuration;
 use super::{input::Input, markdown, shared};
 use crate::agent::presets::registry::AgentPresetRegistry;
 use crate::agent::sandbox::filesystem::{BindMount, SandboxedFilesystem};
+use crate::agent::steering::SteeringInbox;
 use crate::config::ModelConfig;
 use crate::config::ModelConfigStore;
 use crate::orchestrator::workflow::session::{WorkflowContext, WorkflowDefinition};
@@ -69,7 +70,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::{io, thread};
 
 enum Update {
-    Ready,
+    Ready(Option<SteeringInbox>),
     Section(RenderMessageSection),
     Finished(Result<(), String>),
     Failed(String),
@@ -89,6 +90,7 @@ pub(super) struct Session {
     pub tick: usize,
     commands: Sender<String>,
     updates: Receiver<Update>,
+    steering_inbox: Option<SteeringInbox>,
 }
 
 impl Session {
@@ -100,7 +102,7 @@ impl Session {
                     .insert(&text.replace("\r\n", "\n").replace('\r', "\n"), true);
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Esc if !self.busy => return true,
+                KeyCode::Esc if self.busy && !self.starting => self.stop_turn(),
                 KeyCode::Enter
                     if key
                         .modifiers
@@ -111,8 +113,12 @@ impl Session {
                 KeyCode::Enter => self.submit(),
                 KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
                 KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
-                KeyCode::Up => self.scroll = self.scroll.saturating_add(1),
-                KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.scroll = self.scroll.saturating_add(1)
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.scroll = self.scroll.saturating_sub(1)
+                }
                 KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => self.scroll = 0,
                 _ => self.composer.key(key, true),
             },
@@ -141,7 +147,7 @@ impl Session {
         self.render_composer(frame, composer);
         shared::help(
             frame,
-            "Enter Send · Alt+Enter Newline · PgUp/PgDn Scroll\nEsc End session (when idle) · Ctrl+C Quit",
+            "Enter Send/Steer · Alt+Enter Newline · Alt+↑/↓ or PgUp/PgDn Scroll\nEsc Stop turn · Ctrl+C Quit",
             footer,
         );
     }
@@ -234,7 +240,7 @@ impl Session {
             Paragraph::new(self.composer.text.as_str())
                 .block(shared::block(
                     if self.busy {
-                        " Draft next prompt "
+                        " › Steer "
                     } else {
                         " › Prompt "
                     },
@@ -283,7 +289,7 @@ impl Session {
                         return;
                     }
                 };
-                if output.send(Update::Ready).is_err() {
+                if output.send(Update::Ready(workflow.steering_inbox())).is_err() {
                     return;
                 }
                 while let Ok(prompt) = requests.recv() {
@@ -311,6 +317,7 @@ impl Session {
             tick: 0,
             commands,
             updates,
+            steering_inbox: None,
         })
     }
 
@@ -321,7 +328,8 @@ impl Session {
         }
         loop {
             match self.updates.try_recv() {
-                Ok(Update::Ready) => {
+                Ok(Update::Ready(steering_inbox)) => {
+                    self.steering_inbox = steering_inbox;
                     self.starting = false;
                     self.busy = false;
                 }
@@ -339,8 +347,7 @@ impl Session {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.error =
-                        Some("The workflow worker stopped. Press Esc to return to setup.".into());
+                    self.error = Some("The workflow worker stopped. Press Ctrl+C to quit.".into());
                     self.disconnected = true;
                     self.busy = false;
                     self.starting = false;
@@ -351,7 +358,17 @@ impl Session {
     }
 
     pub fn submit(&mut self) {
-        if self.busy || self.disconnected || self.composer.text.trim().is_empty() {
+        if self.disconnected || self.composer.text.trim().is_empty() {
+            return;
+        }
+        if self.busy {
+            if self.starting {
+                return;
+            }
+            if let Some(inbox) = &self.steering_inbox {
+                inbox.add_message(self.composer.take());
+                self.scroll = 0;
+            }
             return;
         }
         if self.commands.send(self.composer.text.clone()).is_ok() {
@@ -362,6 +379,12 @@ impl Session {
         } else {
             self.error = Some("The workflow is no longer running.".into());
             self.disconnected = true;
+        }
+    }
+
+    fn stop_turn(&self) {
+        if let Some(inbox) = &self.steering_inbox {
+            inbox.cancel_turn();
         }
     }
 }
@@ -467,6 +490,7 @@ fn render_color(color: RenderColor) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::steering::SteeringInbox;
     use crate::orchestrator::workflow::{session::WorkflowSession, workflow::WorkflowError};
     use crate::ui_interface::chat::{RenderText, RenderToolCall, RenderToolGroup};
     use std::time::{Duration, Instant};
@@ -496,6 +520,42 @@ mod tests {
         }
     }
 
+    struct ControllableWorkflow {
+        inbox: SteeringInbox,
+    }
+
+    impl WorkflowSession for ControllableWorkflow {
+        fn submit(
+            &mut self,
+            _: String,
+            emit: &mut dyn FnMut(RenderMessageSection),
+        ) -> Result<(), WorkflowError> {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if self.inbox.end_turn_called() {
+                    self.inbox.acknowledge_end_turn();
+                    return Ok(());
+                }
+                if let Some(message) = self.inbox.drain_steering_message() {
+                    emit(RenderMessageSection::Message {
+                        speaker: "Steering".into(),
+                        content: RenderText::plain(message),
+                    });
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(WorkflowError {
+                message: "Timed out waiting for session control".into(),
+                retryable: false,
+            })
+        }
+
+        fn steering_inbox(&self) -> Option<SteeringInbox> {
+            Some(self.inbox.clone())
+        }
+    }
+
     fn wait_for_idle(session: &mut Session) {
         let deadline = Instant::now() + Duration::from_secs(3);
         while session.busy && Instant::now() < deadline {
@@ -518,6 +578,19 @@ mod tests {
             name: "Alternate".into(),
             description: "test".into(),
             create: |_| Ok(Box::new(AlternateWorkflow)),
+        };
+        Session::start(definition, model(), PathBuf::from("/tmp")).unwrap()
+    }
+
+    fn controllable() -> Session {
+        let definition = WorkflowDefinition {
+            name: "Controllable".into(),
+            description: "test".into(),
+            create: |_| {
+                Ok(Box::new(ControllableWorkflow {
+                    inbox: SteeringInbox::new(),
+                }))
+            },
         };
         Session::start(definition, model(), PathBuf::from("/tmp")).unwrap()
     }
@@ -560,6 +633,69 @@ mod tests {
         wait_for_idle(&mut session);
         assert!(session.error.is_none());
         assert_eq!(session.sections.len(), 4);
+    }
+
+    #[test]
+    fn enter_during_a_turn_appends_to_the_steering_inbox() {
+        let mut session = controllable();
+        wait_for_idle(&mut session);
+        session.composer.insert("start", true);
+        session.submit();
+        session.composer.insert("change direction", true);
+
+        assert!(!session.handle_event(Event::Key(KeyCode::Enter.into())));
+        assert!(session.composer.text.is_empty());
+        wait_for_idle(&mut session);
+        assert!(session.error.is_none());
+        assert_eq!(session.sections.len(), 1);
+    }
+
+    #[test]
+    fn escape_during_a_turn_stops_it_without_closing_the_session() {
+        let mut session = controllable();
+        wait_for_idle(&mut session);
+        session.composer.insert("start", true);
+        session.submit();
+
+        assert!(!session.handle_event(Event::Key(KeyCode::Esc.into())));
+        wait_for_idle(&mut session);
+        assert!(session.error.is_none());
+        assert!(session.sections.is_empty());
+    }
+
+    #[test]
+    fn escape_no_longer_closes_an_idle_session() {
+        let mut session = alternate();
+        wait_for_idle(&mut session);
+
+        assert!(!session.handle_event(Event::Key(KeyCode::Esc.into())));
+    }
+
+    #[test]
+    fn transcript_scroll_requires_alt_for_arrow_keys_and_keeps_page_keys() {
+        let mut session = alternate();
+        wait_for_idle(&mut session);
+        session.scroll = 5;
+
+        session.handle_event(Event::Key(KeyCode::Up.into()));
+        session.handle_event(Event::Key(KeyCode::Down.into()));
+        assert_eq!(session.scroll, 5);
+
+        session.handle_event(Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::ALT,
+        )));
+        assert_eq!(session.scroll, 6);
+        session.handle_event(Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::ALT,
+        )));
+        assert_eq!(session.scroll, 5);
+
+        session.handle_event(Event::Key(KeyCode::PageUp.into()));
+        assert_eq!(session.scroll, 15);
+        session.handle_event(Event::Key(KeyCode::PageDown.into()));
+        assert_eq!(session.scroll, 5);
     }
 
     #[test]
