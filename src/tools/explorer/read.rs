@@ -99,7 +99,7 @@ impl Tool for ReadFileTool {
                         "path": input.path,
                         "content": content,
                     }),
-                    RenderToolCall::new(RenderText::plain(title)),
+                    RenderToolCall::new(RenderText::markdown(title)),
                 )
             }
             Err(err) => {

@@ -11,6 +11,7 @@ pub enum ToolGroupKind {
     Explorer,
     Editing,
     Running,
+    Interaction,
 }
 
 /// An explicitly configured collection of related tools rendered together.
@@ -30,6 +31,7 @@ impl ToolGroup {
             ToolGroupKind::Explorer => "Explored",
             ToolGroupKind::Editing => "Edited",
             ToolGroupKind::Running => "Ran",
+            ToolGroupKind::Interaction => "Asked",
         };
 
         Self {
@@ -52,6 +54,12 @@ impl ToolGroup {
                 ToolGroupKind::Running => ToolGroupColorScheme {
                     header: RenderColor::Yellow,
                     connector: RenderColor::Yellow,
+                    title: RenderColor::Default,
+                    body: RenderColor::Muted,
+                },
+                ToolGroupKind::Interaction => ToolGroupColorScheme {
+                    header: RenderColor::Cyan,
+                    connector: RenderColor::Cyan,
                     title: RenderColor::Default,
                     body: RenderColor::Muted,
                 },

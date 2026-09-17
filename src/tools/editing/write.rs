@@ -124,7 +124,7 @@ impl Tool for CreateFileTool {
                         "path": input.path,
                         "bytes": input.content.len(),
                     }),
-                    RenderToolCall::new(RenderText::plain(title)),
+                    RenderToolCall::new(RenderText::markdown(title)),
                 )
             }
 

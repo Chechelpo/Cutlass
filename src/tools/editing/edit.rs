@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::json;
+use similar::TextDiff;
 use tracing::{error, info, warn};
 
 use crate::agent::agent_session::AgentSession;
@@ -33,6 +34,15 @@ pub enum EditFileAction {
 }
 
 const ALL_ACTIONS: [EditFileAction; 1] = [EditFileAction::Edit];
+
+fn unified_edit_diff(path: &str, before: &str, after: &str) -> String {
+    TextDiff::from_lines(before, after)
+        .unified_diff()
+        .header(&format!("a/{path}"), &format!("b/{path}"))
+        .to_string()
+        .trim_end()
+        .to_string()
+}
 
 pub struct EditFileTool {
     actions: Vec<EditFileAction>,
@@ -179,6 +189,8 @@ impl Tool for EditFileTool {
             )
         };
 
+        let diff = unified_edit_diff(&input.path, &content, &updated);
+
         match workspace.write_file(path, &updated) {
             Ok(()) => {
                 let plural = if replacements == 1 { "" } else { "s" };
@@ -202,7 +214,8 @@ impl Tool for EditFileTool {
                         "path": input.path,
                         "replacements": replacements,
                     }),
-                    RenderToolCall::new(RenderText::plain(title)),
+                    RenderToolCall::new(RenderText::markdown(title))
+                        .with_body(RenderText::plain(diff)),
                 )
             }
 
@@ -331,5 +344,43 @@ mod tests {
             .unwrap();
 
         assert!(!input.replace_all);
+    }
+
+    #[test]
+    fn renders_a_contextual_unified_diff() {
+        let before = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n";
+        let after = "one\ntwo\nthree\nFOUR\nfive\nsix\nseven\n";
+
+        assert_eq!(
+            unified_edit_diff("src/file.txt", before, after),
+            concat!(
+                "--- a/src/file.txt\n",
+                "+++ b/src/file.txt\n",
+                "@@ -1,7 +1,7 @@\n",
+                " one\n",
+                " two\n",
+                " three\n",
+                "-four\n",
+                "+FOUR\n",
+                " five\n",
+                " six\n",
+                " seven",
+            ),
+        );
+    }
+
+    #[test]
+    fn renders_separate_hunks_for_distant_edits() {
+        let before = (1..=12)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let after = before
+            .replace("line 2\n", "changed 2\n")
+            .replace("line 11\n", "changed 11\n");
+        let diff = unified_edit_diff("file.txt", &before, &after);
+
+        assert_eq!(diff.matches("@@").count(), 4);
+        assert!(diff.contains("-line 2\n+changed 2"));
+        assert!(diff.contains("-line 11\n+changed 11"));
     }
 }

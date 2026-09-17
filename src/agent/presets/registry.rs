@@ -1,10 +1,12 @@
 use crate::agent::presets::agent::Agent;
-use crate::agent::prompt::{SysPrompt, SysPromptSections};
+use crate::agent::prompt::{SysPrompt, SysPromptSections, UserPrependSections};
 use crate::tools::explorer::{ReadFileAction, ReadFileTool, TreeTool};
 use crate::tools::group::{ToolGroup, ToolGroupKind};
+use crate::tools::interaction::PromptUserTool;
 use tracing::{debug, info};
 use crate::tools::editing::edit::EditFileTool;
 use crate::tools::editing::write::CreateFileTool;
+use crate::tools::explorer::web_search::WebSearchTool;
 use crate::tools::running::BashTool;
 
 pub struct AgentPresetRegistry {
@@ -34,6 +36,7 @@ impl AgentPresetRegistry {
                         SysPromptSections::all(),
                         String::from(""),
                     ),
+                    vec![UserPrependSections::RepoMap],
                     vec![
                         ToolGroup::new(
                             ToolGroupKind::Explorer,
@@ -52,6 +55,14 @@ impl AgentPresetRegistry {
                         ToolGroup::new(
                             ToolGroupKind::Running,
                             vec![Box::new(BashTool::all_actions(false))],
+                        ),
+                        ToolGroup::new(
+                            ToolGroupKind::Explorer,
+                            vec![Box::new(WebSearchTool::from_env(false))],
+                        ),
+                        ToolGroup::new(
+                            ToolGroupKind::Interaction,
+                            vec![Box::new(PromptUserTool::new())],
                         ),
                     ],
                     vec![],

@@ -1,4 +1,5 @@
 use crate::agent::names;
+use crate::agent::interactions::UserInteractionBroker;
 pub use crate::agent::presets::agent::Agent;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::agent::sandbox::sandbox::{Sandbox, create_sandbox};
@@ -13,6 +14,7 @@ use crate::ui_interface::chat::{
 };
 use names::get_agent_name;
 use tracing::{debug, error, info, warn};
+use crate::agent::prompt::build_user_context;
 
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -35,6 +37,7 @@ pub struct AgentSession<'a> {
     pub chat_history: Vec<Message>,
     events: Vec<AgentEvent>,
     pub steering_inbox: SteeringInbox,
+    pub user_interactions: Option<UserInteractionBroker>,
     pub sandbox: Box<dyn Sandbox>,
 }
 
@@ -45,6 +48,9 @@ impl<'a> AgentSession<'a> {
         preset: &'a Agent,
     ) -> Self {
         let system_prompt = preset.system_prompt.build(&sandboxed_filesystem);
+        let initial_user_context: String = build_user_context(
+            &preset.user_sections, &sandboxed_filesystem
+        ).unwrap_or_else(|_| "".to_string());
         let name = get_agent_name();
         info!(
             agent = %name,
@@ -54,17 +60,29 @@ impl<'a> AgentSession<'a> {
             "created agent session"
         );
         debug!(system_prompt_chars = system_prompt.chars().count(), "built system prompt");
+        let mut chat_history = vec![Message::System {
+            content: system_prompt,
+        }];
+        if !initial_user_context.trim().is_empty() {
+            chat_history.push(Message::User {
+                content: initial_user_context,
+            });
+        }
         AgentSession {
             name,
             preset,
             model_config: config,
-            chat_history: vec![Message::System {
-                content: system_prompt,
-            }],
+            chat_history,
             events: Vec::new(),
             steering_inbox: SteeringInbox::new(),
+            user_interactions: None,
             sandbox: create_sandbox(sandboxed_filesystem),
         }
+    }
+
+    pub fn with_user_interactions(mut self, broker: UserInteractionBroker) -> Self {
+        self.user_interactions = Some(broker);
+        self
     }
     pub fn tool_groups(&self) -> &[ToolGroup] {
         &self.preset.tool_groups
@@ -440,6 +458,7 @@ mod tests {
             "Test agent".into(),
             "Agent-session test fixture".into(),
             SysPrompt::empty(),
+            vec![],
             tool_groups,
             Vec::new(),
         )

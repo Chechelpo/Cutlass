@@ -19,3 +19,10 @@ Most of citra's features are not yet implemented.
 system binaries as much as possible. Cutlass uses the host's binaries in ro-binds while keeping only the current workspace as a w-bind.
 2. Citra's tool-set is far more complete (for now).
 3. Citra does not require building (python vs. rust)
+
+## Web search
+
+The `web_search` tool calls an OpenSERP `/mega/search` endpoint. Set
+`OPENSERP_URL` to the instance base URL; it defaults to `http://localhost:7000`.
+Searches return OpenSERP's agent-friendly Markdown by default, with JSON available
+when structured results are needed.

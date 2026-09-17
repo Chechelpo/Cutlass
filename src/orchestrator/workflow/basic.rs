@@ -1,6 +1,7 @@
 //! The default, Codex-style single-agent workflow.
 
 use crate::agent::agent_session::{Agent, AgentSession};
+use crate::agent::interactions::UserInteractionBroker;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::chat_completions::api::client::ApiError;
 use crate::chat_completions::messages::Message;
@@ -25,6 +26,19 @@ impl<'a> BasicWorkflow<'a> {
         Self {
             session: AgentSession::new(workspace, model_config, agent),
         }
+    }
+
+    pub fn with_user_interactions(
+        workspace: SandboxedFilesystem,
+        model_config: &'a ModelConfig,
+        agent: &'a Agent,
+        user_interactions: Option<UserInteractionBroker>,
+    ) -> Self {
+        let mut workflow = Self::new(workspace, model_config, agent);
+        if let Some(broker) = user_interactions {
+            workflow.session.user_interactions = Some(broker);
+        }
+        workflow
     }
 
     pub fn run(&mut self, prompt: impl Into<String>) -> Result<&[Message], ApiError> {

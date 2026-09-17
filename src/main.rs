@@ -7,7 +7,7 @@ pub mod tui;
 pub mod ui_interface;
 pub mod utils;
 
-use crate::config::ModelConfigStore;
+use crate::config::{ModelConfigStore, get_log_location};
 use crate::orchestrator::workflow::session::built_in_workflows;
 use crate::tui::run_tui;
 use crate::utils::logger::init_logging;
@@ -16,7 +16,12 @@ use tracing::{error, info};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = env::current_dir()?;
-    let log_directory = workspace.join("logs");
+    let log_directory = get_log_location().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not determine the platform log directory",
+        )
+    })?;
     std::fs::create_dir_all(&log_directory)?;
     let _logging_guard = init_logging(&log_directory);
 

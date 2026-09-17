@@ -1,5 +1,6 @@
 mod read;
 mod tree;
+pub mod web_search;
 
-pub use tree::{TreeAction, TreeTool};
 pub use read::{ReadFileAction, ReadFileTool};
+pub use tree::TreeTool;

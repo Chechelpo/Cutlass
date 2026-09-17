@@ -2,6 +2,7 @@
 
 use super::{BasicWorkflow, workflow::WorkflowError};
 use crate::agent::steering::SteeringInbox;
+use crate::agent::interactions::UserInteractionBroker;
 use crate::agent::presets::registry::AgentPresetRegistry;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::config::ModelConfig;
@@ -27,6 +28,7 @@ pub struct WorkflowContext<'a> {
     pub workspace: SandboxedFilesystem,
     pub model: &'a ModelConfig,
     pub agents: &'a AgentPresetRegistry,
+    pub user_interactions: Option<UserInteractionBroker>,
 }
 
 pub type WorkflowFactory =
@@ -52,10 +54,11 @@ pub fn built_in_workflows() -> Vec<WorkflowDefinition> {
                     message: "The Coder preset is unavailable".into(),
                     retryable: false,
                 })?;
-            Ok(Box::new(BasicWorkflow::new(
+            Ok(Box::new(BasicWorkflow::with_user_interactions(
                 context.workspace,
                 context.model,
                 agent,
+                context.user_interactions,
             )))
         },
     }];

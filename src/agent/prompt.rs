@@ -1,5 +1,44 @@
+use std::io;
 use chrono::{DateTime, Local};
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
+use crate::utils::directory_tree::render_tree;
+
+pub enum UserPrependSections {
+    RepoMap,
+}
+
+impl UserPrependSections {
+    fn render(
+        &self,
+        sandboxed_filesystem: &SandboxedFilesystem,
+    ) -> io::Result<String> {
+        match self {
+            Self::RepoMap => {
+                render_tree(
+                    sandboxed_filesystem.workspace_base(),
+                    20,
+                    false,
+                    &[],
+                    false,
+                    200,
+                    false,
+                )
+            }
+        }
+    }
+}
+
+pub fn build_user_context(
+    user_sections: &[UserPrependSections],
+    sandboxed_filesystem: &SandboxedFilesystem,
+) -> io::Result<String> {
+    user_sections
+        .iter()
+        .map(|section| section.render(sandboxed_filesystem))
+        .collect::<io::Result<Vec<String>>>()
+        .map(|sections| sections.join("\n"))
+}
+
 
 pub enum SysPromptSections{
     Environment,
