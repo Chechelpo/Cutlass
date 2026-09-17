@@ -58,6 +58,7 @@ impl AgentPresetRegistry {
                 ),
             ],
         };
+        info!(agent_count = to_return.all_agents.len(), "created agent preset registry");
         debug!("Instantiated agent registry:\n{}", to_return);
         to_return
     }

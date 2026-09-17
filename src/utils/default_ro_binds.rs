@@ -13,9 +13,8 @@ pub fn ro_binds() -> Vec<BindMount> {
         BindMount::path("/etc"),
         // Git helpers and common shell data such as locales and timezones.
         BindMount::path("/usr/share"),
-        // Standard devices and process information expected by Git and shell tools.
-        BindMount::path("/dev"),
-        BindMount::path("/proc"),
+        // /dev and /proc are created privately by the process sandbox. Binding
+        // the host paths read-only would make /dev/null unwritable.
     ]
 }
 
@@ -32,15 +31,17 @@ mod tests {
     #[test]
     fn includes_git_runtime_dependencies() {
         let binds = ro_binds();
-        for path in [
-            "/usr/bin",
-            "/usr/lib",
-            "/etc",
-            "/usr/share",
-            "/dev",
-            "/proc",
-        ] {
+        for path in ["/usr/bin", "/usr/lib", "/etc", "/usr/share"] {
             assert!(binds.iter().any(|bind| bind.guest == Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn leaves_virtual_filesystems_to_the_process_sandbox() {
+        let binds = ro_binds();
+
+        for path in ["/dev", "/proc"] {
+            assert!(!binds.iter().any(|bind| bind.guest == Path::new(path)));
         }
     }
 }

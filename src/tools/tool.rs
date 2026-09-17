@@ -3,7 +3,7 @@ use std::hash::Hash;
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{ChatCompletionTool, ToolCall, ToolResult};
 use serde::de::DeserializeOwned;
-use tracing::{debug, error, trace};
+use tracing::{error, trace};
 
 ///
 /// Typed tool definition.
@@ -62,15 +62,12 @@ where
     fn run(&self, context: &AgentSession, call: &ToolCall) -> ToolResult {
         let input: T::Input = match serde_json::from_str(&call.function.arguments) {
             Ok(value) => {
-                trace!("Parsed {} into {} tool call arguments", call.function.arguments, self.name());
+                trace!(tool = self.name(), call_id = %call.id, argument_bytes = call.function.arguments.len(), "parsed tool call arguments");
                 value
             },
 
             Err(err) => {
-                error!(
-                    "Error parsing {} into a {} call. \n{}",
-                    call.function.arguments, self.name(), err
-                );
+                error!(tool = self.name(), call_id = %call.id, argument_bytes = call.function.arguments.len(), error = %err, "could not parse tool call arguments");
                 return ToolResult::failure(call, format!("Invalid arguments: {}", err));
             }
         };

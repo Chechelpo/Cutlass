@@ -5,6 +5,7 @@ use crate::agent::presets::registry::AgentPresetRegistry;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::config::ModelConfig;
 use crate::ui_interface::chat::RenderMessageSection;
+use tracing::{debug, info};
 
 /// A live workflow, potentially coordinating multiple agent sessions.
 /// Constructed and used on the same worker thread, so it need not be `Send`.
@@ -34,7 +35,7 @@ pub struct WorkflowDefinition {
 
 /// A catalog of factories, separate from the existing workflow metadata registry.
 pub fn built_in_workflows() -> Vec<WorkflowDefinition> {
-    vec![WorkflowDefinition {
+    let workflows = vec![WorkflowDefinition {
         name: "Basic".into(),
         description: "A persistent conversation with the Coder agent and its tools.".into(),
         create: |context| {
@@ -51,7 +52,9 @@ pub fn built_in_workflows() -> Vec<WorkflowDefinition> {
                 agent,
             )))
         },
-    }]
+    }];
+    debug!(workflow_count = workflows.len(), "registered built-in workflows");
+    workflows
 }
 
 impl WorkflowSession for BasicWorkflow<'_> {
@@ -60,6 +63,7 @@ impl WorkflowSession for BasicWorkflow<'_> {
         prompt: String,
         emit: &mut dyn FnMut(RenderMessageSection),
     ) -> Result<(), WorkflowError> {
+        info!(workflow = "Basic", prompt_chars = prompt.chars().count(), "submitting workflow turn");
         self.session_mut()
             .run_with_events(prompt, emit)
             .map_err(|error| WorkflowError {

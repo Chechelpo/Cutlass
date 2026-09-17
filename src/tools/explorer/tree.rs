@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::json;
+use tracing::{error, info};
 use std::path::Path;
 
 use crate::agent::agent_session::AgentSession;
@@ -187,6 +188,7 @@ impl Tool for TreeTool {
             Ok(path) => path,
 
             Err(error) => {
+                error!(path = %guest_path.display(), call_id = %call.id, error = %error, "could not resolve tree path in sandbox");
                 return ToolResult::failure(
                     call,
                     error.to_string(),
@@ -206,6 +208,7 @@ impl Tool for TreeTool {
         ) {
 
             Ok(tree) => {
+                info!(path = %input.path, call_id = %call.id, max_depth = input.max_depth, limit = input.limit, tree_chars = tree.chars().count(), "rendered directory tree");
 
                 ToolResult::success(
                     call,
@@ -228,6 +231,7 @@ impl Tool for TreeTool {
 
 
             Err(error) => {
+                error!(path = %input.path, call_id = %call.id, max_depth = input.max_depth, limit = input.limit, error = %error, "could not render directory tree");
 
                 ToolResult::failure(
                     call,

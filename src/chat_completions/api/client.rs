@@ -1,6 +1,7 @@
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
-use tracing::{debug, error};
+use std::time::Instant;
+use tracing::{debug, error, warn};
 use crate::chat_completions::api::retry_cases::is_retry_case;
 use crate::chat_completions::messages::{AssistantMessage, Message};
 use crate::chat_completions::tools::ChatCompletionTool;
@@ -38,10 +39,8 @@ impl ApiClient {
     ) -> Result<AssistantMessage, ApiError> {
         let endpoint = format!("{}/chat/completions", host.trim_end_matches('/'));
 
-        debug!(
-        model = %model,
-        "Sending chat completion request"
-    );
+        let started_at = Instant::now();
+        debug!(model = %model, message_count = messages.len(), tool_count = tools.len(), max_output_tokens, "sending chat completion request");
 
         let response = self
             .client
@@ -65,20 +64,15 @@ impl ApiClient {
 
         let status = response.status().as_u16() as usize;
 
-        let raw_body = response.text().map_err(|error| ApiError {
-            is_retryable: false,
-            status,
-            message: error.to_string(),
+        let raw_body = response.text().map_err(|error| {
+            error!(status, error = %error, "could not read chat completion response body");
+            ApiError { is_retryable: false, status, message: error.to_string() }
         })?;
 
         if !(200..300).contains(&status) {
             let message = extract_error_message(&raw_body);
 
-            error!(
-            status,
-            retryable = is_retry_case(status, &message),
-            "Chat completion API returned an error"
-        );
+            warn!(status, retryable = is_retry_case(status, &message), error_chars = message.chars().count(), elapsed_ms = started_at.elapsed().as_millis(), "chat completion API returned an error");
 
             return Err(ApiError {
                 is_retryable: is_retry_case(status, &message),
@@ -87,30 +81,24 @@ impl ApiClient {
             });
         }
 
-        debug!(
-        status,
-        "Chat completion request succeeded"
-    );
+        debug!(status, elapsed_ms = started_at.elapsed().as_millis(), response_bytes = raw_body.len(), "chat completion request succeeded");
 
-        let body: Value = serde_json::from_str(&raw_body).map_err(|error| ApiError {
-            is_retryable: false,
-            status,
-            message: format!("Invalid API response: {error}"),
+        let body: Value = serde_json::from_str(&raw_body).map_err(|error| {
+            error!(status, response_bytes = raw_body.len(), error = %error, "could not parse chat completion response");
+            ApiError { is_retryable: false, status, message: format!("Invalid API response: {error}") }
         })?;
 
         let message = body
             .pointer("/choices/0/message")
             .cloned()
-            .ok_or_else(|| ApiError {
-                is_retryable: false,
-                status,
-                message: "API response contains no assistant message".into(),
+            .ok_or_else(|| {
+                error!(status, "chat completion response contains no assistant message");
+                ApiError { is_retryable: false, status, message: "API response contains no assistant message".into() }
             })?;
 
-        serde_json::from_value(message).map_err(|error| ApiError {
-            is_retryable: false,
-            status,
-            message: format!("Invalid assistant message: {error}"),
+        serde_json::from_value(message).map_err(|error| {
+            error!(status, error = %error, "could not deserialize assistant message");
+            ApiError { is_retryable: false, status, message: format!("Invalid assistant message: {error}") }
         })
     }
 }

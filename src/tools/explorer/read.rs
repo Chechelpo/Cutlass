@@ -92,7 +92,7 @@ impl Tool for ReadFileTool {
             Ok(content) => {
                 let line_count = content.lines().count();
                 let title = format!("**Read** file _{}_ ({} lines)", input.path, line_count);
-                info!("Read file: \n{} ({} lines)", input.path, line_count);
+                info!(path = %input.path, call_id = %call.id, line_count, bytes = content.len(), "read file");
                 ToolResult::success(
                     call,
                     json!({
@@ -103,7 +103,7 @@ impl Tool for ReadFileTool {
                 )
             }
             Err(err) => {
-                error!("Error reading file {}: {}", path.display(), err);
+                error!(path = %path.display(), call_id = %call.id, error = %err, "could not read file");
                 ToolResult::failure(call, err.to_string())
             },
         }

@@ -4,6 +4,7 @@ use crate::tools::tool::DynTool;
 use crate::ui_interface::chat::{
     RenderColor, RenderText, RenderToolCall, RenderToolGroup, ToolGroupColorScheme,
 };
+use tracing::{debug, trace};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolGroupKind {
@@ -96,10 +97,14 @@ impl ToolGroup {
     }
 
     pub fn execute_owned_call(&self, agent: &AgentSession, call: &ToolCall) -> Option<ToolResult> {
-        self.tools
+        let tool = self.tools
             .iter()
-            .find(|tool| tool.name() == call.function.name)
-            .map(|tool| tool.run(agent, call))
+            .find(|tool| tool.name() == call.function.name)?;
+        debug!(agent = %agent.name, group = ?self.kind, tool = tool.name(), call_id = %call.id, "dispatching tool call");
+        let _span = tracing::debug_span!("tool_call", tool = tool.name(), call_id = %call.id).entered();
+        let result = tool.run(agent, call);
+        trace!(tool = tool.name(), call_id = %call.id, "tool call completed");
+        Some(result)
     }
 }
 

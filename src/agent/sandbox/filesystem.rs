@@ -1,7 +1,7 @@
 use crate::agent::sandbox::sandbox::SandboxError;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
 
 pub struct BindMount {
     pub host: PathBuf,
@@ -70,9 +70,17 @@ impl SandboxedFilesystem {
         inside_any(&self.ro_binds, path) || self.in_write_bounds(path)
     }
     pub fn read_file(&self, path: &Path) -> Result<String, SandboxError> {
-        let host_path = self.resolve_read_path(path)?;
+        let host_path = self.resolve_read_path(path).map_err(|error| {
+            warn!(path = %path.display(), error = %error, "sandbox denied file read");
+            error
+        })?;
 
-        fs::read_to_string(host_path).map_err(SandboxError::Io)
+        let content = fs::read_to_string(&host_path).map_err(|error| {
+            error!(path = %path.display(), host_path = %host_path.display(), error = %error, "sandbox file read failed");
+            SandboxError::Io(error)
+        })?;
+        debug!(path = %path.display(), bytes = content.len(), "sandbox file read completed");
+        Ok(content)
     }
     pub(crate) fn resolve_read_path(&self, path: &Path) -> Result<PathBuf, SandboxError> {
         let normalized_path = normalize_path(path)
@@ -173,22 +181,39 @@ impl SandboxedFilesystem {
     }
 
     pub fn write_file(&self, path: &Path, content: &str) -> Result<(), SandboxError> {
-        let host_path = self.resolve_write_path(path)?;
+        let host_path = self.resolve_write_path(path).map_err(|error| {
+            warn!(path = %path.display(), error = %error, "sandbox denied file write");
+            error
+        })?;
 
-        fs::write(host_path, content).map_err(SandboxError::Io)
+        fs::write(&host_path, content).map_err(|error| {
+            error!(path = %path.display(), host_path = %host_path.display(), error = %error, "sandbox file write failed");
+            SandboxError::Io(error)
+        })?;
+        info!(path = %path.display(), bytes = content.len(), "sandbox file write completed");
+        Ok(())
     }
 
     pub fn create_file(&self, path: &Path, content: &str) -> Result<(), SandboxError> {
-        let host_path = self.resolve_write_path(path)?;
+        let host_path = self.resolve_write_path(path).map_err(|error| {
+            warn!(path = %path.display(), error = %error, "sandbox denied file creation");
+            error
+        })?;
 
         if host_path.exists() {
+            warn!(path = %path.display(), "sandbox refused to create an existing file");
             return Err(SandboxError::PermissionDenied(format!(
                 "File already exists: {}",
                 path.display()
             )));
         }
 
-        fs::write(host_path, content).map_err(SandboxError::Io)
+        fs::write(&host_path, content).map_err(|error| {
+            error!(path = %path.display(), host_path = %host_path.display(), error = %error, "sandbox file creation failed");
+            SandboxError::Io(error)
+        })?;
+        info!(path = %path.display(), bytes = content.len(), "sandbox file created");
+        Ok(())
     }
 }
 

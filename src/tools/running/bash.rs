@@ -15,7 +15,7 @@
 
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{
@@ -156,15 +156,11 @@ impl Tool for BashTool {
                 let stderr_chars = output.stderr.chars().count();
                 let truncated = stdout_chars > MAX_OUTPUT_CHARS || stderr_chars > MAX_OUTPUT_CHARS;
 
-                info!(
-                    exit_code = output.exit_code,
-                    stdout_chars = stdout_chars,
-                    stderr_chars = stderr_chars,
-                    truncated = truncated,
-                    writable = writable,
-                    command = %input.command,
-                    "Ran Bash command in sandbox"
-                );
+                match output.exit_code {
+                    Some(0) => info!(stdout_chars, stderr_chars, truncated, writable, command = %input.command, "sandbox command completed successfully"),
+                    Some(exit_code) => warn!(exit_code, stdout_chars, stderr_chars, truncated, writable, command = %input.command, "sandbox command completed with a non-zero exit code"),
+                    None => warn!(stdout_chars, stderr_chars, truncated, writable, command = %input.command, "sandbox command was terminated by a signal"),
+                }
 
                 let stdout = cap_output(&output.stdout, "stdout");
                 let stderr = cap_output(&output.stderr, "stderr");

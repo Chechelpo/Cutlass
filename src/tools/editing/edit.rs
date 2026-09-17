@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::agent::agent_session::AgentSession;
 use crate::chat_completions::tools::{
@@ -112,6 +112,7 @@ impl Tool for EditFileTool {
         input: Self::Input,
     ) -> ToolResult {
         if input.old_string.is_empty() {
+            warn!(path = %input.path, call_id = %call.id, "rejected edit with empty search text");
             return ToolResult::failure(
                 call,
                 "old_string must not be empty".to_string(),
@@ -139,6 +140,7 @@ impl Tool for EditFileTool {
         let occurrences = content.matches(old_string).count();
 
         if occurrences == 0 {
+            warn!(path = %path.display(), call_id = %call.id, old_string_chars = old_string.chars().count(), "edit search text was not found");
             return ToolResult::failure(
                 call,
                 format!(
@@ -149,6 +151,7 @@ impl Tool for EditFileTool {
         }
 
         if occurrences > 1 && !input.replace_all {
+            warn!(path = %path.display(), call_id = %call.id, occurrences, "rejected ambiguous edit without replace_all");
             return ToolResult::failure(
                 call,
                 format!(

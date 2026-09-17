@@ -12,7 +12,7 @@ use crate::ui_interface::chat::{
     RenderMessageSection, RenderText, RenderToolCall, RenderToolGroup,
 };
 use names::get_agent_name;
-use tracing::debug;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -45,9 +45,17 @@ impl<'a> AgentSession<'a> {
         preset: &'a Agent,
     ) -> Self {
         let system_prompt = preset.system_prompt.build(&sandboxed_filesystem);
-        debug!("Initiated agent session with prompt\n{}", system_prompt);
+        let name = get_agent_name();
+        info!(
+            agent = %name,
+            preset = %preset.name,
+            model_profile = %config.name(),
+            tool_group_count = preset.tool_groups.len(),
+            "created agent session"
+        );
+        debug!(system_prompt_chars = system_prompt.chars().count(), "built system prompt");
         AgentSession {
-            name: get_agent_name(),
+            name,
             preset,
             model_config: config,
             chat_history: vec![Message::System {
@@ -71,13 +79,16 @@ impl<'a> AgentSession<'a> {
     }
 
     pub fn add_user_message(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        debug!(agent = %self.name, message_chars = message.chars().count(), "added user message");
         self.chat_history.push(Message::User {
-            content: message.into(),
+            content: message,
         });
         self.record_latest_message();
     }
 
     pub fn request_cancel(&mut self) {
+        info!(agent = %self.name, "cancellation requested for agent turn");
         self.steering_inbox.cancel_turn();
     }
 
@@ -93,8 +104,18 @@ impl<'a> AgentSession<'a> {
         user_prompt: String,
         emit: &mut dyn FnMut(RenderMessageSection),
     ) -> Result<(), ApiError> {
+        let user_prompt_chars = user_prompt.chars().count();
+        let _span = tracing::info_span!(
+            "agent_turn",
+            agent = %self.name,
+            preset = %self.preset.name,
+            model = %self.model_config.id(),
+            user_prompt_chars,
+        )
+        .entered();
         let mut cursor = self.events.len();
         let client = ApiClient::new();
+        info!(history_messages = self.chat_history.len(), "starting agent turn");
         self.chat_history.push(Message::User {
             content: user_prompt,
         });
@@ -104,10 +125,12 @@ impl<'a> AgentSession<'a> {
         loop {
             if self.steering_inbox.end_turn_called() {
                 self.steering_inbox.acknowledge_end_turn();
+                info!("agent turn cancelled");
                 return Ok(());
             }
 
             if let Some(message) = self.steering_inbox.drain_steering_message() {
+                info!(message_chars = message.chars().count(), "applying steering message");
                 self.chat_history.push(Message::User { content: message });
                 self.record_latest_message();
                 self.emit_since(&mut cursor, emit);
@@ -115,6 +138,7 @@ impl<'a> AgentSession<'a> {
 
             let response = self.run_turn(&client)?;
             if response.is_final() {
+                info!("assistant produced final response");
                 self.chat_history.push(Message::from(response));
                 self.record_latest_message();
                 self.emit_since(&mut cursor, emit);
@@ -129,28 +153,32 @@ impl<'a> AgentSession<'a> {
     /// Runs one model round. Retryable failures are retried without turning
     /// tool calls into additional retry attempts.
     fn run_turn(&self, client: &ApiClient) -> Result<AssistantMessage, ApiError> {
+        let _span = tracing::debug_span!("model_round", agent = %self.name).entered();
         let keys = self
             .model_config
             .decrypted_keys()
-            .map_err(|error| ApiError {
-                status: 0,
-                is_retryable: false,
-                message: error.to_string(),
+            .map_err(|error| {
+                error!(model_profile = %self.model_config.name(), error = %error, "could not decrypt model API keys");
+                ApiError { status: 0, is_retryable: false, message: error.to_string() }
             })?;
 
-        let key = keys.first().ok_or_else(|| ApiError {
-            status: 0,
-            is_retryable: false,
-            message: "The selected connection has no API key".into(),
+        debug!(configured_key_count = keys.len(), "decrypted configured API keys");
+
+        let key = keys.first().ok_or_else(|| {
+            warn!(model_profile = %self.model_config.name(), "selected model configuration has no API key");
+            ApiError { status: 0, is_retryable: false, message: "The selected connection has no API key".into() }
         })?;
 
         let mut retries_remaining = self.model_config.retry_amount();
+        let configured_retries = retries_remaining;
         let tools = self
             .tool_groups()
             .iter()
             .flat_map(|group| group.tools())
             .map(|tool| tool.as_chat_completion_tool())
             .collect::<Vec<_>>();
+
+        debug!(history_messages = self.chat_history.len(), tool_count = tools.len(), retries_remaining, "requesting chat completion");
 
         loop {
             match client.call(
@@ -161,16 +189,24 @@ impl<'a> AgentSession<'a> {
                 self.model_config.max_output_tokens(),
                 &tools,
             ) {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    debug!(tool_call_count = response.tool_calls().len(), is_final = response.is_final(), "received chat completion");
+                    return Ok(response);
+                }
                 Err(error) if error.is_retryable && retries_remaining > 0 => {
+                    warn!(status = error.status, retry_attempt = configured_retries - retries_remaining + 1, retries_remaining, error_chars = error.message.chars().count(), "retryable model request failed; retrying");
                     retries_remaining -= 1;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    error!(status = error.status, retryable = error.is_retryable, error = %error.message, "model request failed");
+                    return Err(error);
+                }
             }
         }
     }
 
     fn handle_tool_calls(&mut self, message: AssistantMessage) {
+        info!(tool_call_count = message.tool_calls().len(), "handling assistant tool calls");
         let mut tool_results = Vec::with_capacity(message.tool_calls().len());
         let mut grouped_results: Vec<Vec<RenderToolCall>> =
             self.preset.tool_groups.iter().map(|_| Vec::new()).collect();
@@ -180,6 +216,7 @@ impl<'a> AgentSession<'a> {
         // records, so presentation concerns never reorder tool side effects or
         // the provider-facing result messages.
         for call in message.tool_calls() {
+            debug!(tool = %call.function.name, call_id = %call.id, "executing tool call");
             let handled =
                 self.preset
                     .tool_groups
@@ -193,10 +230,12 @@ impl<'a> AgentSession<'a> {
 
             let result = match handled {
                 Some((group_index, result)) => {
+                    debug!(tool = %call.function.name, call_id = %call.id, group = ?self.preset.tool_groups[group_index].kind(), "tool call completed by configured group");
                     grouped_results[group_index].push(result.render.clone());
                     result
                 }
                 None => {
+                    warn!(tool = %call.function.name, call_id = %call.id, "assistant requested an unregistered tool");
                     let result = ToolResult::failure(
                         call,
                         format!("No tool found with name '{}'", call.function.name),
@@ -231,6 +270,7 @@ impl<'a> AgentSession<'a> {
 
         self.respond_to_tool_calls(message, tool_results);
         self.events.extend(group_events);
+        debug!(history_messages = self.chat_history.len(), event_count = self.events.len(), "recorded tool-call results");
     }
 
     /// Adds a complete tool-call exchange to the next Chat Completions request:

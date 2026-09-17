@@ -12,17 +12,11 @@ use crate::orchestrator::workflow::session::built_in_workflows;
 use crate::tui::run_tui;
 use crate::utils::logger::init_logging;
 use std::env;
-use tracing::info;
+use tracing::{error, info};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = env::current_dir()?;
     let log_directory = workspace.join("logs");
-    info!(
-        "Initialized workspace at {}.\nLogs stored at {}",
-        workspace.display(),
-        log_directory.display()
-    );
-
     std::fs::create_dir_all(&log_directory)?;
     let _logging_guard = init_logging(&log_directory);
 
@@ -32,7 +26,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting Cutlass"
     );
 
-    let mut model_configs = ModelConfigStore::new()?;
-    run_tui(&mut model_configs, built_in_workflows(), workspace)?;
+    let mut model_configs = ModelConfigStore::new().map_err(|error| {
+        error!(error = %error, "failed to initialize model configuration store");
+        error
+    })?;
+    let workflows = built_in_workflows();
+    info!(workflow_count = workflows.len(), "launching terminal interface");
+    run_tui(&mut model_configs, workflows, workspace).map_err(|error| {
+        error!(error = %error, "terminal interface exited with an error");
+        error
+    })?;
+    info!("Cutlass shut down cleanly");
     Ok(())
 }

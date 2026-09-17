@@ -5,6 +5,7 @@ use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::chat_completions::api::client::ApiError;
 use crate::chat_completions::messages::Message;
 use crate::config::ModelConfig;
+use tracing::{debug, info};
 
 /// A persistent conversation supervised by a single agent.
 ///
@@ -20,13 +21,16 @@ impl<'a> BasicWorkflow<'a> {
         model_config: &'a ModelConfig,
         agent: &'a Agent,
     ) -> Self {
+        info!(preset = %agent.name, model_profile = %model_config.name(), "creating basic workflow session");
         Self {
             session: AgentSession::new(workspace, model_config, agent),
         }
     }
 
     pub fn run(&mut self, prompt: impl Into<String>) -> Result<&[Message], ApiError> {
-        self.session.run(prompt.into())?;
+        let prompt = prompt.into();
+        debug!(prompt_chars = prompt.chars().count(), "submitting prompt to basic workflow");
+        self.session.run(prompt)?;
         Ok(self.session.messages())
     }
 

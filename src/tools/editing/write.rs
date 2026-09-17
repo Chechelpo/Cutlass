@@ -116,11 +116,7 @@ impl Tool for CreateFileTool {
                     input.content.len()
                 );
 
-                info!(
-                    "Created file: {} ({} bytes)",
-                    input.path,
-                    input.content.len()
-                );
+                info!(path = %input.path, call_id = %call.id, bytes = input.content.len(), "created file");
 
                 ToolResult::success(
                     call,
@@ -133,11 +129,7 @@ impl Tool for CreateFileTool {
             }
 
             Err(err) => {
-                error!(
-                    "Error creating file {}: {}",
-                    path.display(),
-                    err
-                );
+                error!(path = %path.display(), call_id = %call.id, error = %err, "could not create file");
 
                 ToolResult::failure(call, err.to_string())
             }
