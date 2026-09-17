@@ -3,6 +3,9 @@
 //! [`RepoMap`] walks a repository, extracts definitions and references with
 //! tree-sitter, ranks definitions using the reference graph, and renders the
 //! highest-value source lines that fit in a token budget.
+//!
+//! TODO:
+//!     1. Add single-file symbol scan
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -88,7 +91,8 @@ const REFERENCE_NODE_TYPES: &[&str] = &[
 pub struct Definition {
     pub path: String,
     /// Zero-based source line.
-    pub line: usize,
+    pub start_line: usize,
+    pub end_line: usize,
     pub name: String,
 }
 
@@ -450,7 +454,8 @@ fn extract_tags(root: Node<'_>, source: &[u8], relative: &str) -> FileIndex {
         {
             definitions.push(Definition {
                 path: relative.to_owned(),
-                line: name_node.start_position().row,
+                start_line: node.start_position().row,
+                end_line: node.end_position().row,
                 name,
             });
             definition_ranges.insert((name_node.start_byte(), name_node.end_byte()));
@@ -655,19 +660,19 @@ fn rank_definitions(
     }
     let included = result
         .iter()
-        .map(|item| (item.path.clone(), item.line, item.name.clone()))
+        .map(|item| (item.path.clone(), item.start_line, item.name.clone()))
         .collect::<HashSet<_>>();
     let mut remaining = indexes
         .values()
         .flat_map(|index| index.definitions.iter().cloned())
-        .filter(|item| !included.contains(&(item.path.clone(), item.line, item.name.clone())))
+        .filter(|item| !included.contains(&(item.path.clone(), item.start_line, item.name.clone())))
         .collect::<Vec<_>>();
     remaining.sort_by_key(|item| {
         (
             !path_matches_focus(&item.path, focus),
             !focus.contains(&item.name),
             item.path.clone(),
-            item.line,
+            item.start_line,
         )
     });
     result.extend(remaining);
@@ -786,7 +791,13 @@ where
     }
     if best.is_empty() {
         let first = &ranked[0];
-        format!("{}:{}: {}", first.path, first.line + 1, first.name)
+        format!(
+            "{}:{}-{}: {}",
+            first.path,
+            first.start_line + 1,
+            first.end_line + 1,
+            first.name
+        )
     } else {
         best.trim_end().to_owned()
     }
@@ -796,30 +807,39 @@ fn render_definitions(
     definitions: &[Definition],
     physical_paths: &BTreeMap<String, PathBuf>,
 ) -> String {
-    let mut lines_by_file: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
-    for definition in definitions {
-        lines_by_file
-            .entry(&definition.path)
-            .or_default()
-            .insert(definition.line);
-    }
     let mut parts = Vec::new();
-    for (relative, wanted_lines) in lines_by_file {
-        let Some(physical) = physical_paths.get(relative) else {
+    let mut definitions = definitions.to_vec();
+
+    definitions.sort_by_key(|d| {
+        (d.path.clone(), d.start_line)
+    });
+    for definition in definitions {
+        let Some(physical) = physical_paths.get(&definition.path) else {
             continue;
         };
+
         let Ok(code) = fs::read_to_string(physical) else {
             continue;
         };
+
         let source_lines = code.lines().collect::<Vec<_>>();
-        let rendered = wanted_lines
-            .into_iter()
+
+        let rendered = (definition.start_line..=definition.end_line)
             .filter_map(|line| source_lines.get(line))
             .map(|line| truncate_line(line, MAX_RENDERED_LINE_LENGTH))
             .collect::<Vec<_>>()
             .join("\n");
-        parts.push(format!("{relative}:\n{rendered}"));
+
+        parts.push(format!(
+            "{}:{}-{} {}:\n{}",
+            definition.path,
+            definition.start_line + 1,
+            definition.end_line + 1,
+            definition.name,
+            rendered
+        ));
     }
+
     if parts.is_empty() {
         String::new()
     } else {
@@ -954,7 +974,10 @@ mod tests {
         let rendered = map
             .render_with_counter(".", ["unusually_long_function_name"], 1, str::len)
             .unwrap();
-        assert_eq!(rendered, "main.rs:1: unusually_long_function_name");
+        assert_eq!(
+            rendered,
+            "main.rs:1-1: unusually_long_function_name"
+        );
     }
 
     #[test]
