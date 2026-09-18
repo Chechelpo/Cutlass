@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
 
+#[derive(Clone)]
 pub struct BindMount {
     pub host: PathBuf,
     pub guest: PathBuf,
@@ -19,6 +20,7 @@ impl BindMount {
     }
 }
 
+#[derive(Clone)]
 pub struct SandboxedFilesystem {
     workspace_base: PathBuf,
     ro_binds: Vec<BindMount>,

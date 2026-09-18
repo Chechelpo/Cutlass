@@ -12,6 +12,7 @@ pub enum ToolGroupKind {
     Editing,
     Running,
     Interaction,
+    Memory,
 }
 
 /// An explicitly configured collection of related tools rendered together.
@@ -32,6 +33,7 @@ impl ToolGroup {
             ToolGroupKind::Editing => "Edited",
             ToolGroupKind::Running => "Ran",
             ToolGroupKind::Interaction => "Asked",
+            ToolGroupKind::Memory => "Updated memory",
         };
 
         Self {
@@ -43,13 +45,13 @@ impl ToolGroup {
                     header: RenderColor::Cyan,
                     connector: RenderColor::Blue,
                     title: RenderColor::Default,
-                    body: RenderColor::Muted,
+                    body: RenderColor::Muted
                 },
                 ToolGroupKind::Editing => ToolGroupColorScheme {
                     header: RenderColor::Green,
                     connector: RenderColor::Green,
                     title: RenderColor::Default,
-                    body: RenderColor::Muted
+                    body: RenderColor::Muted,
                 },
                 ToolGroupKind::Running => ToolGroupColorScheme {
                     header: RenderColor::Yellow,
@@ -60,6 +62,12 @@ impl ToolGroup {
                 ToolGroupKind::Interaction => ToolGroupColorScheme {
                     header: RenderColor::Cyan,
                     connector: RenderColor::Cyan,
+                    title: RenderColor::Default,
+                    body: RenderColor::Muted,
+                },
+                ToolGroupKind::Memory => ToolGroupColorScheme {
+                    header: RenderColor::Magenta,
+                    connector: RenderColor::Magenta,
                     title: RenderColor::Default,
                     body: RenderColor::Muted,
                 },

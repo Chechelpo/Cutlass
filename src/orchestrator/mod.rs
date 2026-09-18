@@ -4,6 +4,7 @@
 //! intentionally outside the active orchestration API.
 
 mod agent_orchestrator;
+pub mod memory;
 pub mod workflow;
 
 pub use workflow::BasicWorkflow;

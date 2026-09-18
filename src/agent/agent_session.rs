@@ -1,6 +1,7 @@
-use crate::agent::names;
 use crate::agent::interactions::UserInteractionBroker;
+use crate::agent::names;
 pub use crate::agent::presets::agent::Agent;
+use crate::agent::prompt::build_user_context;
 use crate::agent::sandbox::filesystem::SandboxedFilesystem;
 use crate::agent::sandbox::sandbox::{Sandbox, create_sandbox};
 use crate::agent::steering::SteeringInbox;
@@ -8,13 +9,13 @@ use crate::chat_completions::api::client::{ApiClient, ApiError};
 use crate::chat_completions::messages::{AssistantMessage, Message};
 use crate::chat_completions::tools::ToolResult;
 use crate::config::ModelConfig;
+use crate::orchestrator::memory::ConversationMemory;
 use crate::tools::group::{ToolGroup, ToolGroupKind};
 use crate::ui_interface::chat::{
     RenderMessageSection, RenderText, RenderToolCall, RenderToolGroup,
 };
 use names::get_agent_name;
 use tracing::{debug, error, info, warn};
-use crate::agent::prompt::build_user_context;
 
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -39,6 +40,9 @@ pub struct AgentSession<'a> {
     pub steering_inbox: SteeringInbox,
     pub user_interactions: Option<UserInteractionBroker>,
     pub sandbox: Box<dyn Sandbox>,
+    /// Durable typed state. Controllers may clone this handle into a fresh
+    /// role session without sharing conversation history.
+    pub memory: ConversationMemory,
 }
 
 impl<'a> AgentSession<'a> {
@@ -47,10 +51,26 @@ impl<'a> AgentSession<'a> {
         config: &'a ModelConfig,
         preset: &'a Agent,
     ) -> Self {
+        Self::with_memory(
+            sandboxed_filesystem,
+            config,
+            preset,
+            ConversationMemory::new(),
+        )
+    }
+
+    /// Create a session over existing workflow memory, for serial-role
+    /// handoffs. The new role gets fresh chat history and a rendered snapshot.
+    pub fn with_memory(
+        sandboxed_filesystem: SandboxedFilesystem,
+        config: &'a ModelConfig,
+        preset: &'a Agent,
+        memory: ConversationMemory,
+    ) -> Self {
         let system_prompt = preset.system_prompt.build(&sandboxed_filesystem);
-        let initial_user_context: String = build_user_context(
-            &preset.user_sections, &sandboxed_filesystem
-        ).unwrap_or_else(|_| "".to_string());
+        let initial_user_context: String =
+            build_user_context(&preset.user_sections, &sandboxed_filesystem)
+                .unwrap_or_else(|_| "".to_string());
         let name = get_agent_name();
         info!(
             agent = %name,
@@ -59,13 +79,24 @@ impl<'a> AgentSession<'a> {
             tool_group_count = preset.tool_groups.len(),
             "created agent session"
         );
-        debug!(system_prompt_chars = system_prompt.chars().count(), "built system prompt");
+        debug!(
+            system_prompt_chars = system_prompt.chars().count(),
+            "built system prompt"
+        );
         let mut chat_history = vec![Message::System {
             content: system_prompt,
         }];
         if !initial_user_context.trim().is_empty() {
             chat_history.push(Message::User {
                 content: initial_user_context,
+            });
+        }
+        let memory_context = memory.render();
+        if !memory_context.is_empty() {
+            chat_history.push(Message::User {
+                content: format!(
+                    "# Shared workflow memory\n\nTreat this typed state as the durable handoff from prior roles. Verify it against the workspace before relying on it.\n\n{memory_context}"
+                ),
             });
         }
         AgentSession {
@@ -77,6 +108,7 @@ impl<'a> AgentSession<'a> {
             steering_inbox: SteeringInbox::new(),
             user_interactions: None,
             sandbox: create_sandbox(sandboxed_filesystem),
+            memory,
         }
     }
 
@@ -99,9 +131,7 @@ impl<'a> AgentSession<'a> {
     pub fn add_user_message(&mut self, message: impl Into<String>) {
         let message = message.into();
         debug!(agent = %self.name, message_chars = message.chars().count(), "added user message");
-        self.chat_history.push(Message::User {
-            content: message,
-        });
+        self.chat_history.push(Message::User { content: message });
         self.record_latest_message();
     }
 
@@ -133,12 +163,16 @@ impl<'a> AgentSession<'a> {
         .entered();
         let mut cursor = self.events.len();
         let client = ApiClient::new();
-        info!(history_messages = self.chat_history.len(), "starting agent turn");
+        info!(
+            history_messages = self.chat_history.len(),
+            "starting agent turn"
+        );
         self.chat_history.push(Message::User {
             content: user_prompt,
         });
         self.record_latest_message();
         self.emit_since(&mut cursor, emit);
+        let mut completed_rounds = 0;
 
         loop {
             if self.steering_inbox.take_end_turn() {
@@ -147,13 +181,26 @@ impl<'a> AgentSession<'a> {
             }
 
             if let Some(message) = self.steering_inbox.drain_steering_message() {
-                info!(message_chars = message.chars().count(), "applying steering message");
+                info!(
+                    message_chars = message.chars().count(),
+                    "applying steering message"
+                );
                 self.chat_history.push(Message::User { content: message });
                 self.record_latest_message();
                 self.emit_since(&mut cursor, emit);
             }
 
+            if let Some(task_steering) = &self.preset.task_steering
+                && task_steering.applies_before_round(completed_rounds)
+            {
+                debug!(completed_rounds, "injecting periodic task steering");
+                self.chat_history.push(Message::User {
+                    content: task_steering.content.clone(),
+                });
+            }
+
             let response = self.run_turn(&client)?;
+            completed_rounds += 1;
             if self.steering_inbox.take_end_turn() {
                 info!("agent turn cancelled");
                 return Ok(());
@@ -163,7 +210,10 @@ impl<'a> AgentSession<'a> {
                 self.record_latest_message();
                 self.emit_since(&mut cursor, emit);
                 if let Some(message) = self.steering_inbox.drain_steering_message() {
-                    info!(message_chars = message.chars().count(), "applying steering message");
+                    info!(
+                        message_chars = message.chars().count(),
+                        "applying steering message"
+                    );
                     self.chat_history.push(Message::User { content: message });
                     self.record_latest_message();
                     self.emit_since(&mut cursor, emit);
@@ -190,7 +240,10 @@ impl<'a> AgentSession<'a> {
                 ApiError { status: 0, is_retryable: false, message: error.to_string() }
             })?;
 
-        debug!(configured_key_count = keys.len(), "decrypted configured API keys");
+        debug!(
+            configured_key_count = keys.len(),
+            "decrypted configured API keys"
+        );
 
         let key = keys.first().ok_or_else(|| {
             warn!(model_profile = %self.model_config.name(), "selected model configuration has no API key");
@@ -206,7 +259,12 @@ impl<'a> AgentSession<'a> {
             .map(|tool| tool.as_chat_completion_tool())
             .collect::<Vec<_>>();
 
-        debug!(history_messages = self.chat_history.len(), tool_count = tools.len(), retries_remaining, "requesting chat completion");
+        debug!(
+            history_messages = self.chat_history.len(),
+            tool_count = tools.len(),
+            retries_remaining,
+            "requesting chat completion"
+        );
 
         loop {
             match client.call(
@@ -218,11 +276,21 @@ impl<'a> AgentSession<'a> {
                 &tools,
             ) {
                 Ok(response) => {
-                    debug!(tool_call_count = response.tool_calls().len(), is_final = response.is_final(), "received chat completion");
+                    debug!(
+                        tool_call_count = response.tool_calls().len(),
+                        is_final = response.is_final(),
+                        "received chat completion"
+                    );
                     return Ok(response);
                 }
                 Err(error) if error.is_retryable && retries_remaining > 0 => {
-                    warn!(status = error.status, retry_attempt = configured_retries - retries_remaining + 1, retries_remaining, error_chars = error.message.chars().count(), "retryable model request failed; retrying");
+                    warn!(
+                        status = error.status,
+                        retry_attempt = configured_retries - retries_remaining + 1,
+                        retries_remaining,
+                        error_chars = error.message.chars().count(),
+                        "retryable model request failed; retrying"
+                    );
                     retries_remaining -= 1;
                 }
                 Err(error) => {
@@ -234,7 +302,10 @@ impl<'a> AgentSession<'a> {
     }
 
     fn handle_tool_calls(&mut self, message: AssistantMessage) {
-        info!(tool_call_count = message.tool_calls().len(), "handling assistant tool calls");
+        info!(
+            tool_call_count = message.tool_calls().len(),
+            "handling assistant tool calls"
+        );
         let mut tool_results = Vec::with_capacity(message.tool_calls().len());
         let mut grouped_results: Vec<Vec<RenderToolCall>> =
             self.preset.tool_groups.iter().map(|_| Vec::new()).collect();
@@ -298,7 +369,11 @@ impl<'a> AgentSession<'a> {
 
         self.respond_to_tool_calls(message, tool_results);
         self.events.extend(group_events);
-        debug!(history_messages = self.chat_history.len(), event_count = self.events.len(), "recorded tool-call results");
+        debug!(
+            history_messages = self.chat_history.len(),
+            event_count = self.events.len(),
+            "recorded tool-call results"
+        );
     }
 
     /// Adds a complete tool-call exchange to the next Chat Completions request:
@@ -353,6 +428,7 @@ mod tests {
     use super::*;
     use crate::agent::prompt::SysPrompt;
     use crate::chat_completions::tools::{ChatCompletionTool, FunctionDefinition, ToolCall};
+    use crate::orchestrator::memory::{ConversationMemory, MemoryGroupPreset, MemoryKind};
     use crate::tools::tool::Tool;
     use serde_json::{Value, json};
     use std::cell::RefCell;
@@ -481,6 +557,22 @@ mod tests {
             "role": "assistant",
             "content": null,
             "tool_calls": tool_calls,
+        }))
+        .unwrap()
+    }
+
+    fn tool_response_with_arguments(name: &str, arguments: Value) -> AssistantMessage {
+        serde_json::from_value(json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "memory-call",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": serde_json::to_string(&arguments).unwrap(),
+                },
+            }],
         }))
         .unwrap()
     }
@@ -648,6 +740,129 @@ mod tests {
         assert_eq!(render.calls.len(), 2);
         assert!(render.calls[0].title.as_str().contains("call-0"));
         assert!(render.calls[1].title.as_str().contains("call-1"));
+
+        drop(session);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn fresh_role_session_receives_shared_memory_without_conversation_history() {
+        let directory = temporary_directory("memory-handoff");
+        let config = model_config(&directory);
+        let explorer = agent(Vec::new()).with_memory_group(MemoryGroupPreset::explorer());
+        let reviewer = agent(Vec::new()).with_memory_group(MemoryGroupPreset::reviewer());
+        let memory = ConversationMemory::new();
+        memory
+            .add(
+                MemoryKind::Requirement,
+                "The user can export a report",
+                None,
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+
+        let first = AgentSession::with_memory(
+            SandboxedFilesystem::new(PathBuf::new(), Vec::new(), Vec::new()),
+            &config,
+            &explorer,
+            memory.clone(),
+        );
+        let second = AgentSession::with_memory(
+            SandboxedFilesystem::new(PathBuf::new(), Vec::new(), Vec::new()),
+            &config,
+            &reviewer,
+            memory,
+        );
+
+        assert_eq!(first.memory.records(), second.memory.records());
+        assert_eq!(second.messages().len(), 2);
+        assert!(matches!(
+            &second.messages()[1],
+            Message::User { content }
+                if content.contains("Shared workflow memory")
+                    && content.contains("[R1] The user can export a report")
+        ));
+        assert!(
+            second
+                .preset
+                .tool_groups
+                .iter()
+                .any(|group| group.kind() == ToolGroupKind::Memory)
+        );
+
+        drop(first);
+        drop(second);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn memory_capabilities_are_enforced_when_a_tool_is_called() {
+        let directory = temporary_directory("memory-capability");
+        let config = model_config(&directory);
+        let explorer = agent(Vec::new()).with_memory_group(MemoryGroupPreset::explorer());
+        let memory = ConversationMemory::new();
+        memory
+            .add(
+                MemoryKind::Requirement,
+                "Only review may satisfy this",
+                None,
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        let mut session = AgentSession::with_memory(
+            SandboxedFilesystem::new(PathBuf::new(), Vec::new(), Vec::new()),
+            &config,
+            &explorer,
+            memory,
+        );
+
+        session.handle_tool_calls(tool_response_with_arguments(
+            "memory_requirement",
+            json!({
+                "action": "satisfy",
+                "id": "R1",
+                "evidence": "not authorized",
+            }),
+        ));
+
+        assert_eq!(
+            session.memory.get("R1".parse().unwrap()).unwrap().status,
+            crate::orchestrator::memory::MemoryStatus::Active
+        );
+        let Message::Tool { content, .. } = session.messages().last().unwrap() else {
+            panic!("expected memory tool result");
+        };
+        assert!(content.to_string().contains("does not allow action"));
+
+        drop(session);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_tool_records_the_controller_route() {
+        let directory = temporary_directory("memory-checkpoint-route");
+        let config = model_config(&directory);
+        let explorer = agent(Vec::new()).with_memory_group(MemoryGroupPreset::explorer());
+        let mut session = session(&config, &explorer);
+
+        session.handle_tool_calls(tool_response_with_arguments(
+            "memory_checkpoint",
+            json!({
+                "action": "set",
+                "content": "Exploration is grounded",
+                "next_step": "plan",
+            }),
+        ));
+
+        let checkpoint = session
+            .memory
+            .records_of_kind(MemoryKind::Checkpoint)
+            .pop()
+            .unwrap();
+        assert_eq!(checkpoint.next_step.as_deref(), Some("plan"));
+        assert_eq!(checkpoint.content, "Exploration is grounded");
 
         drop(session);
         fs::remove_dir_all(directory).unwrap();
